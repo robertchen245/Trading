@@ -1,0 +1,65 @@
+Metadata-Version: 2.4
+Name: trading-backtest
+Version: 0.1.0
+Summary: DCA backtest engine with baselines, metrics, and Plotly reports
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: vectorbt>=0.26.0
+Requires-Dist: pandas>=2.0
+Requires-Dist: numpy>=1.24
+Requires-Dist: plotly>=5.18
+Requires-Dist: pyarrow>=14.0
+Provides-Extra: dev
+Requires-Dist: jupyter>=1.0; extra == "dev"
+Requires-Dist: kaleido>=0.2.1; extra == "dev"
+
+# Trading — 回测策略引擎
+
+基于 **vectorbt** 的月度定投回测：主策略可插拔权重规则、与多条 baseline 对比、量化指标汇总，以及 **Plotly** 多图报告与 Jupyter 探索。
+
+## 功能概览
+
+- **定投策略**：[`DCAParams`](trading/strategies/dca.py) 配置标的、区间、月预算、信号标的（如纳指）与基准；[`fixed_weight_allocator`](trading/strategies/dca.py) / [`nasdaq_rule_allocator`](trading/strategies/dca.py) 等分配器。
+- **Baseline**：每月全额买入基准标的、期初一次性按首月权重买入并持有、每月等权 DCA（见 [`run_scenarios`](trading/engine.py)）。
+- **指标**：CAGR、最大回撤、年化波动、夏普/索提诺、Calmar 等（[`compare_portfolios`](trading/metrics.py)）。
+- **可视化**：净值/回撤/超额、热力图、滚动夏普、年度权重等（[`trading/viz.py`](trading/viz.py)）。
+
+## 安装
+
+在项目根目录执行：
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .
+# 可选：Notebook 与 PNG 导出
+pip install -e ".[dev]"
+```
+
+或：`pip install -r requirements.txt`（需将项目根目录加入 `PYTHONPATH`，或使用 `pip install -e .`）。
+
+## 用法
+
+**命令行示例（与原脚本行为一致）：**
+
+```bash
+python examples/dynamic_dca_vectorbt.py
+```
+
+**一键 HTML 报告（写入 `reports/`）：**
+
+```bash
+python scripts/generate_report.py
+python scripts/generate_report.py --allocator nasdaq_rule
+python scripts/generate_report.py --png
+```
+
+**Notebook：** 打开 [`notebooks/backtest_explore.ipynb`](notebooks/backtest_explore.ipynb)。
+
+## 数据与缓存
+
+行情通过 vectorbt 拉取 Yahoo；收盘价可缓存至 `data/cache/*.parquet`。首次运行需网络。
+
+## 模型说明
+
+当前定投用 `init_cash=累计应投入` 与按月 `size` 近似「每月到账再买入」，未使用现金在账户中闲置至下次定投；与真实券商现金流可能有细微差别，见代码注释。

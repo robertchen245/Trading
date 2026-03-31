@@ -1,0 +1,14 @@
+pyproject.toml
+readme.md
+trading/__init__.py
+trading/data.py
+trading/engine.py
+trading/metrics.py
+trading/viz.py
+trading/strategies/__init__.py
+trading/strategies/dca.py
+trading_backtest.egg-info/PKG-INFO
+trading_backtest.egg-info/SOURCES.txt
+trading_backtest.egg-info/dependency_links.txt
+trading_backtest.egg-info/requires.txt
+trading_backtest.egg-info/top_level.txt
