@@ -1,2 +1,10 @@
-vectorbt/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
 .DS_Store
+data/cache/
+reports/*.html
+reports/*.csv
+reports/*.png
+.ipynb_checkpoints/
