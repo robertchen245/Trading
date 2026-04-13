@@ -18,7 +18,13 @@ def monthly_full_invest(symbol: str) -> BaselineBuilder:
     def build(ctx: ScenarioContext) -> BacktestResult:
         sub = ctx.aligned_close[[symbol]]
         order_sizes = monthly_single_asset_orders(sub, ctx.monthly_budget, symbol)
-        portfolio = portfolio_from_orders(sub, order_sizes, ctx.total_invested)
+        portfolio = portfolio_from_orders(
+            sub,
+            order_sizes,
+            ctx.total_invested,
+            fee_rate=ctx.params.fee_rate,
+            slippage_rate=ctx.params.slippage_rate,
+        )
         return BacktestResult(
             name=name,
             portfolio=portfolio,
@@ -26,6 +32,8 @@ def monthly_full_invest(symbol: str) -> BaselineBuilder:
             yearly_weights=None,
             annual_returns=ctx.annual_returns,
             total_invested=ctx.total_invested,
+            fee_rate=ctx.params.fee_rate,
+            slippage_rate=ctx.params.slippage_rate,
         )
 
     return build
@@ -43,7 +51,13 @@ def lump_sum_first_day() -> BaselineBuilder:
             ctx.first_month_weights,
             ctx.first_invest_date,
         )
-        portfolio = portfolio_from_orders(ctx.strategy_close, order_sizes, ctx.total_invested)
+        portfolio = portfolio_from_orders(
+            ctx.strategy_close,
+            order_sizes,
+            ctx.total_invested,
+            fee_rate=ctx.params.fee_rate,
+            slippage_rate=ctx.params.slippage_rate,
+        )
         return BacktestResult(
             name=name,
             portfolio=portfolio,
@@ -51,6 +65,8 @@ def lump_sum_first_day() -> BaselineBuilder:
             yearly_weights=None,
             annual_returns=ctx.annual_returns,
             total_invested=ctx.total_invested,
+            fee_rate=ctx.params.fee_rate,
+            slippage_rate=ctx.params.slippage_rate,
         )
 
     return build
@@ -71,7 +87,13 @@ def equal_weight_monthly_on_strategy_universe() -> BaselineBuilder:
             default_weights=eq_w,
             allocator=equal_weight_allocator,
         )
-        portfolio = portfolio_from_orders(ctx.strategy_close, order_sizes, ctx.total_invested)
+        portfolio = portfolio_from_orders(
+            ctx.strategy_close,
+            order_sizes,
+            ctx.total_invested,
+            fee_rate=ctx.params.fee_rate,
+            slippage_rate=ctx.params.slippage_rate,
+        )
         return BacktestResult(
             name=name,
             portfolio=portfolio,
@@ -79,6 +101,8 @@ def equal_weight_monthly_on_strategy_universe() -> BaselineBuilder:
             yearly_weights=yearly_weights,
             annual_returns=ctx.annual_returns,
             total_invested=ctx.total_invested,
+            fee_rate=ctx.params.fee_rate,
+            slippage_rate=ctx.params.slippage_rate,
         )
 
     return build

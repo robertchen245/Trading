@@ -12,6 +12,8 @@
 | Baseline 对比 | 与主策略共用对齐后的行情、相同 `monthly_budget` 与 `total_invested` | `run_scenarios` |
 | 量化分析 | CAGR、回撤、年化波动、夏普/索提诺、Calmar；可选合并 vectorbt `stats`；相对基准终值比 | `portfolio_metrics_row`、`compare_portfolios` |
 | 多维度可视化 | 净值/回撤/超额、年度权重柱状堆叠、月度收益热力图、滚动夏普、总览子图 | `trading/viz.py`、`scripts/generate_report.py` |
+| 策略规格抽象 | 用统一 `StrategySpec` 描述策略，便于批量实验与后续 LLM 生成 | `trading/specs.py` |
+| 批量实验与排名 | 多策略一键回测、导出汇总与排名表，支持 prompt/spec-file 输入 | `trading/experiment.py`、`scripts/run_experiments.py` |
 
 ---
 
@@ -28,13 +30,16 @@ Trading/
 │   ├── scenario_context.py # ScenarioContext、BaselineBuilder 协议
 │   ├── baseline_builders.py # monthly_full_invest、lump_sum_first_day 等工厂与 default_baseline_builders_v1
 │   ├── metrics.py          # 净值序列、指标行/表、超额序列
+│   ├── specs.py            # StrategySpec、preset 模板、自然语言转策略草案（MVP）
+│   ├── experiment.py       # run_experiment(s)、分配器注册、策略排名
 │   ├── viz.py              # Plotly 图形与 HTML/PNG 写出
 │   └── strategies/
 │       └── dca.py          # DCAParams、WeightAllocator、订单构造、内置分配器
 ├── examples/
 │   └── dynamic_dca_vectorbt.py
 ├── scripts/
-│   └── generate_report.py
+│   ├── generate_report.py
+│   └── run_experiments.py
 ├── notebooks/
 │   └── backtest_explore.ipynb
 ├── data/
@@ -97,6 +102,10 @@ flowchart TB
 | `benchmark_symbol` | 仅作快捷参数；与 `default_baseline_builders_v1(benchmark_symbol)` 搭配使用，`run_scenarios` **不会**自动读取 |
 | `extra_symbols` | 仅用于 baseline / 对比、不在主策略 `symbols` 中的 ticker；参与下载与 `aligned_close` |
 | `use_cache` | 是否读写 `data/cache/close_<hash>.parquet` |
+| `fee_rate` / `slippage_rate` | 回测成交成本参数，透传到 `Portfolio.from_orders` 的 `fees` 与 `slippage`（默认 0） |
+| `max_weight_per_asset` | 单资产权重上限（可选），超过后会触发权重截断与再分配 |
+| `max_gross_exposure` | 每次定投预算使用上限（可选，`0.8` 表示最多投入月预算 80%） |
+| `risk_observe_only` | 风控观测模式：只记录触发，不实际改变下单 |
 
 ### 4.2 `WeightAllocator`（`Protocol`）
 
@@ -158,6 +167,8 @@ vbt.Portfolio.from_orders(
     close=...,
     size=order_sizes,
     init_cash=total_invested,
+    fees=params.fee_rate,
+    slippage=params.slippage_rate,
     cash_sharing=True,
     group_by=True,
     freq="1D",
@@ -168,6 +179,7 @@ vbt.Portfolio.from_orders(
 
 - **一次性 `init_cash`**：等于「若每月都足额定投」的现金总和；未下单前的现金留在账户，用于近似「每月到账再买入」，而非逐日外部入金 API。
 - **`cash_sharing=True`**：多标的共享同一现金池。
+- **成本与风控诊断**：策略结果包含 `risk_trigger_count` 与 `decision_snapshot`（定投日级别的信号、权重截断、预算利用率），便于复盘规则影响。
 - **收益与风险指标**：`metrics` 中夏普/索提诺等基于**组合净值**日收益率；无风险利率默认年化 `2%`，按 252 个交易日摊到日（见 `portfolio_metrics_row` 的 `risk_free_annual`、`trading_days_per_year`）。
 
 **二次开发若需更贴近真实入金：** 可改为 vectorbt 的现金流/自定义记录，或分段 `from_orders`；当前模块边界是「先统一生成 `order_sizes` + 单次 `init_cash`」。
@@ -516,23 +528,41 @@ pip install -e ".[dev]"    # Jupyter、kaleido（PNG）
 python examples/dynamic_dca_vectorbt.py
 python scripts/generate_report.py
 python scripts/generate_report.py --allocator nasdaq_rule
+python scripts/generate_report.py --fee-rate 0.001 --slippage-rate 0.0005
+python scripts/generate_report.py --max-weight-per-asset 0.65 --max-gross-exposure 0.9
+python scripts/generate_report.py --risk-observe-only
 python scripts/generate_report.py --png
+python scripts/run_experiments.py
+python scripts/run_experiments.py --prompt "做一个激进的纳指规则策略，主要QQQ和TQQQ"
 ```
 
 Jupyter：打开 `notebooks/backtest_explore.ipynb`（工作目录建议为项目根，以便缓存与 `reports` 路径一致）。
 
 ---
 
-## 13. 已知限制与风险
+## 13. 策略实验工作流（推荐）
+
+面向个人研究建议使用以下流程：
+
+1. 先用 `StrategySpec` 表达策略（手写 JSON 或 `nl_to_strategy_spec` 生成草案）。
+2. 用 `run_experiments` 批量跑同一区间同预算策略，避免单策略偏见。
+3. 用 `rank_experiments` 先看策略行 (`scenario == "strategy"`) 的 CAGR/Sharpe 排名。
+4. 再回看 `generate_report.py` 的图表和 `decision_snapshot.csv` 做可解释复盘。
+
+这套流程的关键是把“策略描述”和“执行引擎”解耦，后续接入 Claude/Cursor 时，LLM 只负责生成 `StrategySpec`，而不是直接改回测代码。
+
+---
+
+## 14. 已知限制与风险
 
 - **行情质量**：依赖 Yahoo / yfinance，停牌、复权、时区差异可能影响对齐；生产研究请自行校验数据。
-- **费用与滑点**：当前订单模型未显式扣除手续费；扩展可在 vectorbt 订单参数或成交模型层补充。
+- **费用与滑点**：当前支持固定费率/滑点；尚未覆盖阶梯费率、最小佣金、冲击成本等复杂成交模型。
 - **基准在 `symbols` 外**：将此类 ticker 写入 `extra_symbols`，`_symbols_to_fetch` 为 `symbols ∪ extra_symbols ∪ {signal_symbol}`；否则 `monthly_full_invest("SPY")` 等会缺列。
 - **gitignore**：`data/cache/`、`reports/*.{html,csv,png}` 默认忽略；`reports/.gitkeep` 用于保留空目录。
 
 ---
 
-## 14. 版本与依赖
+## 15. 版本与依赖
 
 - **Python：** `>=3.10`（见 `pyproject.toml`）。
 - **核心依赖：** vectorbt、pandas、numpy、plotly、pyarrow；开发可选 jupyter、kaleido。

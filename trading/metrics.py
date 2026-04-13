@@ -77,7 +77,14 @@ def portfolio_metrics_row(
         "start": idx[0],
         "end": idx[-1],
         "years": years,
+        "fee_rate": float(result.fee_rate),
+        "slippage_rate": float(result.slippage_rate),
+        "risk_trigger_count": int(result.risk_trigger_count),
     }
+    if result.decision_snapshot is not None and not result.decision_snapshot.empty:
+        budget_util = pd.to_numeric(result.decision_snapshot.get("budget_utilization"), errors="coerce")
+        if budget_util is not None:
+            row["avg_budget_utilization"] = float(budget_util.mean())
     for k in ("Win Rate [%]", "Profit Factor", "Expectancy", "Omega Ratio"):
         if k in stat_dict:
             row[k] = stat_dict[k]

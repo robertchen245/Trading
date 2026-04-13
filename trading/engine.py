@@ -10,8 +10,9 @@ from trading.data import fetch_annual_returns, fetch_close_prices, get_monthly_i
 from trading.scenario_context import BaselineBuilder, ScenarioContext
 from trading.strategies.dca import (
     DCAParams,
+    RiskGuardConfig,
     WeightAllocator,
-    build_order_sizes,
+    build_order_plan,
     fixed_weight_allocator,
     normalize_weights,
 )
@@ -27,6 +28,10 @@ class BacktestResult:
     yearly_weights: pd.DataFrame | None
     annual_returns: pd.Series
     total_invested: float
+    fee_rate: float = 0.0
+    slippage_rate: float = 0.0
+    risk_trigger_count: int = 0
+    decision_snapshot: pd.DataFrame | None = None
 
 
 def _symbols_to_fetch(params: DCAParams) -> list[str]:
@@ -43,11 +48,16 @@ def portfolio_from_orders(
     close: pd.DataFrame,
     order_sizes: pd.DataFrame,
     total_invested: float,
+    *,
+    fee_rate: float = 0.0,
+    slippage_rate: float = 0.0,
 ) -> vbt.Portfolio:
     return vbt.Portfolio.from_orders(
         close=close,
         size=order_sizes,
         init_cash=total_invested,
+        fees=fee_rate,
+        slippage=slippage_rate,
         cash_sharing=True,
         group_by=True,
         freq="1D",
@@ -61,16 +71,26 @@ def _dca_backtest(
     annual_returns: pd.Series,
     default_weights: dict[str, float],
     allocator: WeightAllocator,
+    fee_rate: float = 0.0,
+    slippage_rate: float = 0.0,
+    risk_config: RiskGuardConfig | None = None,
 ) -> BacktestResult:
-    order_sizes, yearly_weights = build_order_sizes(
+    order_sizes, yearly_weights, decision_snapshot, risk_trigger_count = build_order_plan(
         asset_prices=strategy_close,
         monthly_budget=monthly_budget,
         annual_returns=annual_returns,
         default_weights=default_weights,
         allocator=allocator,
+        risk_config=risk_config,
     )
     _, total_invested = _invest_months_and_total(monthly_budget, strategy_close.index)
-    portfolio = portfolio_from_orders(strategy_close, order_sizes, total_invested)
+    portfolio = portfolio_from_orders(
+        strategy_close,
+        order_sizes,
+        total_invested,
+        fee_rate=fee_rate,
+        slippage_rate=slippage_rate,
+    )
     return BacktestResult(
         name=name,
         portfolio=portfolio,
@@ -78,6 +98,10 @@ def _dca_backtest(
         yearly_weights=yearly_weights,
         annual_returns=annual_returns,
         total_invested=total_invested,
+        fee_rate=fee_rate,
+        slippage_rate=slippage_rate,
+        risk_trigger_count=risk_trigger_count,
+        decision_snapshot=decision_snapshot,
     )
 
 
@@ -112,6 +136,13 @@ def run_dca_portfolio(
         annual_returns,
         default_w,
         allocator,
+        fee_rate=params.fee_rate,
+        slippage_rate=params.slippage_rate,
+        risk_config=RiskGuardConfig(
+            max_weight_per_asset=params.max_weight_per_asset,
+            max_gross_exposure=params.max_gross_exposure,
+            observe_only=params.risk_observe_only,
+        ),
     )
 
 
@@ -171,6 +202,13 @@ def run_scenarios(
         annual_returns,
         default_w,
         allocator,
+        fee_rate=params.fee_rate,
+        slippage_rate=params.slippage_rate,
+        risk_config=RiskGuardConfig(
+            max_weight_per_asset=params.max_weight_per_asset,
+            max_gross_exposure=params.max_gross_exposure,
+            observe_only=params.risk_observe_only,
+        ),
     )
     _, total_invested = _invest_months_and_total(params.monthly_budget, strategy_close.index)
     d0, w0 = _first_invest_day_weights(strategy_close, annual_returns, default_w, allocator)
