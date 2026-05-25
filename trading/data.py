@@ -38,17 +38,21 @@ def fetch_close_prices(
         close.index = _remove_timezone(close.index)
         return close.sort_index()
 
-    data = vbt.YFData.download(symbols, start=start, end=end)
-    close = data.get("Close")
-    if isinstance(close, pd.Series):
-        close = close.to_frame()
+    # 逐一下载避免 vectorbt YFData 的列对齐 bug
+    import time as _time
+    import yfinance as yf
+    series_list = []
+    for sym in symbols:
+        ticker = yf.Ticker(sym)
+        hist = ticker.history(start=start, end=end, auto_adjust=False)
+        if hist.empty:
+            raise ValueError(f"No data for symbol: {sym}")
+        s = hist["Close"].rename(sym)
+        s.index = _remove_timezone(s.index)
+        series_list.append(s)
+        _time.sleep(0.3)  # 避免 yfinance 限流
 
-    if len(symbols) == 1 and close.shape[1] == 1 and symbols[0] not in close.columns:
-        close.columns = symbols
-
-    close.index = _remove_timezone(close.index)
-    close = close[symbols].dropna(how="any")
-    close = close.sort_index()
+    close = pd.concat(series_list, axis=1).dropna(how="any").sort_index()
 
     if use_cache:
         close.to_parquet(cache_path)
