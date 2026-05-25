@@ -188,6 +188,12 @@ class DCAParams:
     # 组合再平衡
     rebalance_max_weight: float | None = None
     """单资产市值占比上限。超过此值自动卖出至该阈值（如 0.75 = 75%）。None = 不启用。"""
+    rebalance_mode: str = "sell"
+    """"sell": 卖出超阈值资产；"tilt": 不卖，把当月 DCA 预算倾斜给占比最低资产。"""
+
+    # 现金标的
+    cash_symbol: str | None = None
+    """虚拟现金标的名称（如 "CASH"）。若设置，注入价格恒为 $1 的合成列。"""
 
     # 旧字段 — 向后兼容
     @property

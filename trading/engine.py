@@ -40,6 +40,9 @@ def _symbols_to_fetch(params: DCAParams) -> list[str]:
     all_syms = set(params.symbols) | set(params.extra_symbols) | set(params.signal_symbols)
     if params.vix_symbol:
         all_syms.add(params.vix_symbol)
+    # 排除虚拟现金标的（不是真实 ticker）
+    if params.cash_symbol:
+        all_syms.discard(params.cash_symbol)
     return sorted(all_syms)
 
 
@@ -86,6 +89,8 @@ def _dca_backtest(
     drawdown_lookback: int = 252,
     ma_window: int = 200,
     rebalance_max_weight: float | None = None,
+    rebalance_mode: str = "sell",
+    cash_symbol: str | None = None,
 ) -> BacktestResult:
     order_sizes, yearly_weights, decision_snapshot, risk_trigger_count = build_order_plan(
         asset_prices=strategy_close,
@@ -103,15 +108,19 @@ def _dca_backtest(
     if rebalance_max_weight is not None and rebalance_max_weight > 0:
         invest_dates = get_monthly_invest_dates(strategy_close.index)
         order_sizes = apply_rebalance_to_plan(
-            order_sizes, strategy_close, invest_dates, rebalance_max_weight
+            order_sizes, strategy_close, invest_dates, rebalance_max_weight,
+            mode=rebalance_mode,
         )
         # 更新决策快照
-        rebalance_triggered = (order_sizes < 0).any(axis=1).sum()
+        net_negatives = (order_sizes < 0).any(axis=1)
+        rebalance_triggered = net_negatives.sum()
         if decision_snapshot is not None and rebalance_triggered > 0:
             decision_snapshot["rebalance_triggered"] = False
             for dt in invest_dates:
-                if dt in decision_snapshot.index and (order_sizes.loc[dt] < 0).any():
+                if dt in decision_snapshot.index and net_negatives.get(dt, False):
                     decision_snapshot.loc[dt, "rebalance_triggered"] = True
+        elif decision_snapshot is not None:
+            decision_snapshot["rebalance_triggered"] = False
 
     _, total_invested = _invest_months_and_total(monthly_budget, strategy_close.index)
     portfolio = portfolio_from_orders(
@@ -147,6 +156,25 @@ def run_dca_portfolio(
     full_close = fetch_close_prices(all_syms, params.start, params.end, use_cache=params.use_cache)
     strategy_close = full_close[symbols].dropna(how="any")
 
+    # 注入虚拟现金标的
+    if params.cash_symbol:
+        cash_col = params.cash_symbol
+        if cash_col not in strategy_close.columns:
+            strategy_close[cash_col] = 1.0
+        symbols_with_cash = list(symbols) + [cash_col]
+        strategy_close = strategy_close[symbols_with_cash]
+        default_w = {s: params.default_weights[s] for s in symbols if s in params.default_weights}
+        if cash_col in params.default_weights:
+            default_w[cash_col] = params.default_weights[cash_col]
+        else:
+            default_w[cash_col] = 0.0
+    else:
+        default_w = {s: params.default_weights[s] for s in symbols if s in params.default_weights}
+
+    if not default_w:
+        default_w = {s: 1.0 / len(strategy_close.columns) for s in strategy_close.columns}
+    default_w = normalize_weights(default_w)
+
     annual_returns = fetch_annual_returns(
         list(params.signal_symbols), params.start, params.end, use_cache=params.use_cache
     )
@@ -154,11 +182,6 @@ def run_dca_portfolio(
     vix_series = None
     if params.vix_symbol:
         vix_series = fetch_vix_data(params.vix_symbol, params.start, params.end, use_cache=params.use_cache)
-
-    default_w = {s: params.default_weights[s] for s in symbols if s in params.default_weights}
-    if not default_w:
-        default_w = {s: 1.0 / len(symbols) for s in symbols}
-    default_w = normalize_weights(default_w)
 
     return _dca_backtest(
         name,
@@ -178,6 +201,8 @@ def run_dca_portfolio(
         drawdown_lookback=params.drawdown_lookback,
         ma_window=params.ma_window,
         rebalance_max_weight=params.rebalance_max_weight,
+        rebalance_mode=params.rebalance_mode,
+        cash_symbol=params.cash_symbol,
     )
 
 
@@ -229,6 +254,12 @@ def run_scenarios(
     aligned_close = full_close[needed_cols].dropna(how="any")
     strategy_close = aligned_close[symbols]
 
+    # 注入虚拟现金标的
+    if params.cash_symbol:
+        cash_col = params.cash_symbol
+        if cash_col not in strategy_close.columns:
+            strategy_close[cash_col] = 1.0
+
     annual_returns = fetch_annual_returns(
         list(params.signal_symbols), params.start, params.end, use_cache=params.use_cache
     )
@@ -259,6 +290,9 @@ def run_scenarios(
         vix_series=vix_series,
         drawdown_lookback=params.drawdown_lookback,
         ma_window=params.ma_window,
+        rebalance_max_weight=params.rebalance_max_weight,
+        rebalance_mode=params.rebalance_mode,
+        cash_symbol=params.cash_symbol,
     )
     _, total_invested = _invest_months_and_total(params.monthly_budget, strategy_close.index)
     d0, w0 = _first_invest_day_weights(strategy_close, annual_returns, default_w, allocator)

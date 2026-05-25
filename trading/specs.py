@@ -33,6 +33,8 @@ class StrategySpec:
     max_gross_exposure: float | None = None
     risk_observe_only: bool = False
     rebalance_max_weight: float | None = None
+    rebalance_mode: str = "sell"
+    cash_symbol: str | None = None
 
     def validate(self) -> None:
         if not self.name.strip():
@@ -68,6 +70,8 @@ class StrategySpec:
             max_gross_exposure=self.max_gross_exposure,
             risk_observe_only=self.risk_observe_only,
             rebalance_max_weight=self.rebalance_max_weight,
+            rebalance_mode=self.rebalance_mode,
+            cash_symbol=self.cash_symbol,
         )
 
     @classmethod
@@ -93,6 +97,8 @@ class StrategySpec:
             max_gross_exposure=_maybe_float(payload.get("max_gross_exposure")),
             risk_observe_only=bool(payload.get("risk_observe_only", False)),
             rebalance_max_weight=_maybe_float(payload.get("rebalance_max_weight")),
+            rebalance_mode=str(payload.get("rebalance_mode", "sell")),
+            cash_symbol=_maybe_str(payload.get("cash_symbol")),
         )
 
 
