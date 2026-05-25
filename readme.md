@@ -1,6 +1,31 @@
 # Trading — 回测策略引擎
 
-基于 **vectorbt** 的月度定投回测：可插拔的权重分配器、与多条 baseline 在同一日历与资金约束下对比、量化指标汇总，以及基于 **Plotly** 的多图报告与 Jupyter 探索。本文档面向**使用**与**二次开发**。
+基于 **vectorbt** 的月度定投回测：可插拔的权重分配器、多信号系统（drawdown/MA/VIX/年收益）、
+与多条 baseline 在同一日历与资金约束下对比、量化指标汇总，以及基于 **Plotly** 的多图报告与 Jupyter 探索。
+
+## 0. CLI 快速入门
+
+```bash
+pip install -e . && pip install yfinance
+
+# 跑一个策略
+trading run QQQ,TQQQ --allocator smart --vix ^VIX --start 2021 --end 2025
+
+# 批量跑所有预设策略
+trading experiment --presets
+
+# 生成交互式 HTML 报告
+trading report QQQ,TQQQ --allocator smart --vix ^VIX
+
+# 看看有哪些可用
+trading list
+trading show smart_signal_fusion
+```
+
+常用参数：`--start 2021`（自动补全为 2021-01-01）、`--budget 5000`、`--weights QQQ=0.7,TQQQ=0.3`、
+`--signals ^IXIC,^GSPC`、`--allocator fixed|nasdaq_rule|equal_weight|smart`
+
+Python API 仍然可用，见下方第 11 节代码示例。
 
 ---
 
@@ -8,10 +33,12 @@
 
 | 能力 | 说明 | 主要入口 |
 |------|------|----------|
-| 定投策略制定 | 标的、区间、月预算、默认权重；按「年」调用分配器得到当月目标权重，再折算为股数订单 | `DCAParams`、`build_order_sizes`、`run_dca_portfolio` |
+| 定投策略制定 | 标的、区间、月预算、权重；按「年」调用分配器得到当月目标权重，再折算为股数订单 | `DCAParams`、`build_order_sizes`、`run_dca_portfolio` |
+| **多信号系统** | drawdown、MA偏离、VIX恐惧指数、多指数年收益，每个定投日自动注入分配器 | `SignalSnapshot`、`smart_allocator` |
 | Baseline 对比 | 与主策略共用对齐后的行情、相同 `monthly_budget` 与 `total_invested` | `run_scenarios` |
 | 量化分析 | CAGR、回撤、年化波动、夏普/索提诺、Calmar；可选合并 vectorbt `stats`；相对基准终值比 | `portfolio_metrics_row`、`compare_portfolios` |
 | 多维度可视化 | 净值/回撤/超额、年度权重柱状堆叠、月度收益热力图、滚动夏普、总览子图 | `trading/viz.py`、`scripts/generate_report.py` |
+| **CLI** | `trading run/experiment/report/list/show` 子命令 | `trading/cli.py` |
 | 策略规格抽象 | 用统一 `StrategySpec` 描述策略，便于批量实验与后续 LLM 生成 | `trading/specs.py` |
 | 批量实验与排名 | 多策略一键回测、导出汇总与排名表，支持 prompt/spec-file 输入 | `trading/experiment.py`、`scripts/run_experiments.py` |
 
