@@ -7,6 +7,7 @@ import pandas as pd
 import vectorbt as vbt
 
 from trading.data import fetch_annual_returns, fetch_close_prices, fetch_vix_data, get_monthly_invest_dates
+from trading.rebalance import apply_rebalance_to_plan
 from trading.scenario_context import BaselineBuilder, ScenarioContext
 from trading.strategies.dca import (
     DCAParams,
@@ -84,6 +85,7 @@ def _dca_backtest(
     vix_series: pd.Series | None = None,
     drawdown_lookback: int = 252,
     ma_window: int = 200,
+    rebalance_max_weight: float | None = None,
 ) -> BacktestResult:
     order_sizes, yearly_weights, decision_snapshot, risk_trigger_count = build_order_plan(
         asset_prices=strategy_close,
@@ -96,6 +98,21 @@ def _dca_backtest(
         drawdown_lookback=drawdown_lookback,
         ma_window=ma_window,
     )
+
+    # 组合再平衡：叠加卖出订单
+    if rebalance_max_weight is not None and rebalance_max_weight > 0:
+        invest_dates = get_monthly_invest_dates(strategy_close.index)
+        order_sizes = apply_rebalance_to_plan(
+            order_sizes, strategy_close, invest_dates, rebalance_max_weight
+        )
+        # 更新决策快照
+        rebalance_triggered = (order_sizes < 0).any(axis=1).sum()
+        if decision_snapshot is not None and rebalance_triggered > 0:
+            decision_snapshot["rebalance_triggered"] = False
+            for dt in invest_dates:
+                if dt in decision_snapshot.index and (order_sizes.loc[dt] < 0).any():
+                    decision_snapshot.loc[dt, "rebalance_triggered"] = True
+
     _, total_invested = _invest_months_and_total(monthly_budget, strategy_close.index)
     portfolio = portfolio_from_orders(
         strategy_close,
@@ -160,6 +177,7 @@ def run_dca_portfolio(
         vix_series=vix_series,
         drawdown_lookback=params.drawdown_lookback,
         ma_window=params.ma_window,
+        rebalance_max_weight=params.rebalance_max_weight,
     )
 
 

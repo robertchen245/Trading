@@ -32,6 +32,7 @@ class StrategySpec:
     max_weight_per_asset: float | None = None
     max_gross_exposure: float | None = None
     risk_observe_only: bool = False
+    rebalance_max_weight: float | None = None
 
     def validate(self) -> None:
         if not self.name.strip():
@@ -66,6 +67,7 @@ class StrategySpec:
             max_weight_per_asset=self.max_weight_per_asset,
             max_gross_exposure=self.max_gross_exposure,
             risk_observe_only=self.risk_observe_only,
+            rebalance_max_weight=self.rebalance_max_weight,
         )
 
     @classmethod
@@ -90,6 +92,7 @@ class StrategySpec:
             max_weight_per_asset=_maybe_float(payload.get("max_weight_per_asset")),
             max_gross_exposure=_maybe_float(payload.get("max_gross_exposure")),
             risk_observe_only=bool(payload.get("risk_observe_only", False)),
+            rebalance_max_weight=_maybe_float(payload.get("rebalance_max_weight")),
         )
 
 
@@ -150,6 +153,18 @@ def preset_strategy_specs() -> list[StrategySpec]:
             vix_symbol="^VIX",
             drawdown_lookback=252,
             ma_window=200,
+        ),
+        StrategySpec(
+            name="balanced_rebalance_75",
+            symbols=("QQQ", "TQQQ"),
+            start="2016-01-01",
+            end="2026-01-01",
+            monthly_budget=5000.0,
+            default_weights={"QQQ": 0.7, "TQQQ": 0.3},
+            allocator="smart",
+            signal_symbols=("^IXIC",),
+            vix_symbol="^VIX",
+            rebalance_max_weight=0.75,
         ),
     ]
 

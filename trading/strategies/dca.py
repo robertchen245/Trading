@@ -185,6 +185,10 @@ class DCAParams:
     ma_window: int = 200
     """均线计算窗口。"""
 
+    # 组合再平衡
+    rebalance_max_weight: float | None = None
+    """单资产市值占比上限。超过此值自动卖出至该阈值（如 0.75 = 75%）。None = 不启用。"""
+
     # 旧字段 — 向后兼容
     @property
     def signal_symbol(self) -> str:
@@ -212,6 +216,8 @@ class DCAParams:
             raise ValueError("max_weight_per_asset must be in (0, 1].")
         if self.max_gross_exposure is not None and self.max_gross_exposure <= 0:
             raise ValueError("max_gross_exposure must be > 0.")
+        if self.rebalance_max_weight is not None and not (0 < self.rebalance_max_weight <= 1.0):
+            raise ValueError("rebalance_max_weight must be in (0, 1].")
 
 
 # ── RiskGuardConfig ─────────────────────────────────────

@@ -62,6 +62,7 @@ def _add_common_dca_args(parser: argparse.ArgumentParser, require_symbols: bool 
     parser.add_argument("--slippage", type=float, default=0.0, help="滑点率")
     parser.add_argument("--max-weight", type=float, default=None, help="单资产权重上限")
     parser.add_argument("--max-exposure", type=float, default=None, help="预算使用上限")
+    parser.add_argument("--rebalance-max", type=float, default=None, help="再平衡阈值 (如 0.75 = QQQ超75%时卖出)")
     parser.add_argument("--no-cache", action="store_true", help="禁用行情缓存")
 
 
@@ -96,6 +97,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         slippage_rate=args.slippage,
         max_weight_per_asset=args.max_weight,
         max_gross_exposure=args.max_exposure,
+        rebalance_max_weight=args.rebalance_max,
     )
 
     results = run_scenarios(
@@ -199,6 +201,7 @@ def cmd_report(args: argparse.Namespace) -> None:
         vix_symbol=args.vix,
         benchmark_symbol=args.benchmark,
         use_cache=not args.no_cache,
+        rebalance_max_weight=args.rebalance_max,
     )
 
     results = run_scenarios(
