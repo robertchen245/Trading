@@ -14,15 +14,30 @@ pip install -e .
 pip install yfinance       # vectorbt 下载行情需要，暂未打入 pyproject.toml
 
 # 3. 跑冒烟测试（首次需下载行情，约 10-30 秒）
-python3 examples/dynamic_dca_vectorbt.py
 pytest tests/ -v
 
-# 4. 批量实验 & 报告
-python3 scripts/run_experiments.py
-python3 scripts/generate_report.py
+# 4. CLI 一键运行
+trading run QQQ,TQQQ --allocator nasdaq_rule
+trading experiment --presets
+trading report QQQ,TQQQ --allocator smart --vix ^VIX
+trading list
+trading show smart_signal_fusion
 ```
 
 > 在中国大陆需设置代理：`export HTTPS_PROXY=http://127.0.0.1:7890`（端口按实际）
+
+## CLI 命令
+
+| 命令 | 用途 | 示例 |
+|------|------|------|
+| `trading run SYM,SYM` | 单策略回测 + 指标表 | `trading run QQQ,TQQQ --allocator smart --vix ^VIX --start 2021 --end 2025` |
+| `trading experiment --presets` | 批量实验 + 排名 CSV | `trading experiment --presets` |
+| `trading experiment --spec spec.json` | 自定义 spec 批量实验 | |
+| `trading report SYM,SYM` | 生成 HTML 报告 | `trading report QQQ,TQQQ --allocator smart --vix ^VIX --output my_report.html` |
+| `trading list` | 列出所有策略和分配器 | `trading list` |
+| `trading show NAME` | 查看 preset 详情 | `trading show smart_signal_fusion` |
+
+常用参数：`--start 2021`（年份自动补全为 2021-01-01）、`--budget 5000`、`--weights QQQ=0.7,TQQQ=0.3`、`--signals ^IXIC,^GSPC`
 
 ## 项目结构
 

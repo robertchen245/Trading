@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable
 
 import pandas as pd
@@ -46,7 +47,18 @@ def run_experiment(spec: StrategySpec) -> ExperimentResult:
     return ExperimentResult(spec=spec, results=results, metrics=metrics)
 
 
-def run_experiments(specs: list[StrategySpec]) -> tuple[list[ExperimentResult], pd.DataFrame]:
+def run_experiments(
+    specs: list[StrategySpec],
+    *,
+    output_dir: Path | None = None,
+    ts: str | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """批量运行实验并返回 (summary, ranking) 两个 DataFrame。
+
+    若提供 output_dir 和 ts，自动写出 CSV。
+    """
+    from datetime import datetime as dt_lib
+
     runs = [run_experiment(spec) for spec in specs]
     summary_rows: list[pd.DataFrame] = []
     for run in runs:
@@ -54,7 +66,15 @@ def run_experiments(specs: list[StrategySpec]) -> tuple[list[ExperimentResult], 
         table.insert(0, "strategy_name", run.spec.name)
         summary_rows.append(table)
     summary = pd.concat(summary_rows, axis=0, ignore_index=True) if summary_rows else pd.DataFrame()
-    return runs, summary
+    ranking = rank_experiments(summary)
+
+    if output_dir is not None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        _ts = ts or dt_lib.now().strftime("%Y%m%d_%H%M%S")
+        summary.to_csv(output_dir / f"experiments_{_ts}.summary.csv", index=False)
+        ranking.to_csv(output_dir / f"experiments_{_ts}.ranking.csv", index=False)
+
+    return summary, ranking
 
 
 def rank_experiments(summary: pd.DataFrame) -> pd.DataFrame:

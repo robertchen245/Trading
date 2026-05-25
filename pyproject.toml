@@ -19,6 +19,9 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["jupyter>=1.0", "kaleido>=0.2.1"]
 
+[project.scripts]
+trading = "trading.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["trading*"]

@@ -7,7 +7,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from trading.experiment import rank_experiments, run_experiments
+from trading.experiment import run_experiments
 from trading.specs import StrategySpec, nl_to_strategy_spec, preset_strategy_specs
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -21,19 +21,12 @@ def main() -> None:
     args = parser.parse_args()
 
     specs = _load_specs(args.spec_file, args.prompt)
-    runs, summary = run_experiments(specs)
-    ranking = rank_experiments(summary)
-
-    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    summary_path = REPORTS_DIR / f"experiments_{ts}.summary.csv"
-    ranking_path = REPORTS_DIR / f"experiments_{ts}.ranking.csv"
-    summary.to_csv(summary_path, index=False)
-    ranking.to_csv(ranking_path, index=False)
+    summary, ranking = run_experiments(specs, output_dir=REPORTS_DIR, ts=ts)
 
-    print(f"实验策略数: {len(runs)}")
-    print(f"汇总 CSV: {summary_path}")
-    print(f"排名 CSV: {ranking_path}")
+    print(f"实验策略数: {len(specs)}")
+    print(f"汇总 CSV: {REPORTS_DIR / f'experiments_{ts}.summary.csv'}")
+    print(f"排名 CSV: {REPORTS_DIR / f'experiments_{ts}.ranking.csv'}")
 
 
 def _load_specs(spec_file: str | None, prompt: str | None) -> list[StrategySpec]:
