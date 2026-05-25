@@ -15,7 +15,7 @@ class ScenarioContext:
     params: DCAParams
     strategy_close: pd.DataFrame
     aligned_close: pd.DataFrame
-    annual_returns: pd.Series
+    annual_returns: pd.DataFrame
     monthly_budget: float
     total_invested: float
     allocator: WeightAllocator

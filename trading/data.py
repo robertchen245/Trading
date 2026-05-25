@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time as _time
 from pathlib import Path
 
 import pandas as pd
-import vectorbt as vbt
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _CACHE_DIR = _PROJECT_ROOT / "data" / "cache"
@@ -39,8 +39,8 @@ def fetch_close_prices(
         return close.sort_index()
 
     # 逐一下载避免 vectorbt YFData 的列对齐 bug
-    import time as _time
     import yfinance as yf
+
     series_list = []
     for sym in symbols:
         ticker = yf.Ticker(sym)
@@ -61,19 +61,51 @@ def fetch_close_prices(
 
 
 def fetch_annual_returns(
-    symbol: str,
+    symbols: list[str],
     start: str,
     end: str,
     *,
     use_cache: bool = True,
-) -> pd.Series:
-    """标的按自然年收盘计算的年度收益率序列（index=year）。"""
-    close = fetch_close_prices([symbol], start=start, end=end, use_cache=use_cache)[symbol]
-    annual_close = close.groupby(close.index.year).last()
-    annual_returns = annual_close.pct_change().dropna()
-    annual_returns.index.name = "year"
-    annual_returns.name = f"{symbol}_annual_return"
-    return annual_returns
+) -> pd.DataFrame:
+    """多标的年度收益率 DataFrame。
+
+    index = year (int), columns = symbols.
+    每个标的按自然年最后一个收盘价计算 pct_change。
+    """
+    close = fetch_close_prices(symbols, start=start, end=end, use_cache=use_cache)
+
+    result = {}
+    for sym in symbols:
+        if sym not in close.columns:
+            continue
+        annual_close = close[sym].groupby(close.index.year).last()
+        ann_ret = annual_close.pct_change().dropna()
+        ann_ret.name = sym
+        result[sym] = ann_ret
+
+    if not result:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(result)
+    df.index.name = "year"
+    return df
+
+
+def fetch_vix_data(
+    vix_symbol: str,
+    start: str,
+    end: str,
+    *,
+    use_cache: bool = True,
+) -> pd.Series | None:
+    """获取 VIX 收盘价序列（用于恐惧信号）。"""
+    try:
+        close = fetch_close_prices([vix_symbol], start=start, end=end, use_cache=use_cache)
+        if vix_symbol in close.columns:
+            return close[vix_symbol]
+        return close.iloc[:, 0]
+    except Exception:
+        return None
 
 
 def get_monthly_invest_dates(price_index: pd.DatetimeIndex) -> pd.DatetimeIndex:

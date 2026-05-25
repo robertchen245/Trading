@@ -9,7 +9,7 @@ from trading.baseline_builders import default_baseline_builders_v1
 from trading.engine import BacktestResult, run_scenarios
 from trading.metrics import compare_portfolios
 from trading.specs import StrategySpec
-from trading.strategies.dca import equal_weight_allocator, fixed_weight_allocator, nasdaq_rule_allocator
+from trading.strategies.dca import equal_weight_allocator, fixed_weight_allocator, nasdaq_rule_allocator, smart_allocator
 
 AllocatorFn = Callable[..., dict[str, float]]
 
@@ -17,6 +17,7 @@ ALLOCATOR_REGISTRY: dict[str, AllocatorFn] = {
     "fixed": fixed_weight_allocator,
     "nasdaq_rule": nasdaq_rule_allocator,
     "equal_weight": equal_weight_allocator,
+    "smart": smart_allocator,
 }
 
 

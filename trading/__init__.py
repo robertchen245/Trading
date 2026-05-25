@@ -13,10 +13,13 @@ from trading.scenario_context import BaselineBuilder, ScenarioContext
 from trading.specs import StrategySpec, nl_to_strategy_spec, preset_strategy_specs
 from trading.strategies.dca import (
     DCAParams,
+    SignalSnapshot,
     equal_weight_allocator,
     fixed_weight_allocator,
     nasdaq_rule_allocator,
+    smart_allocator,
     normalize_weights,
+    adapt_legacy_allocator,
 )
 
 __all__ = [
@@ -25,7 +28,9 @@ __all__ = [
     "DCAParams",
     "ExperimentResult",
     "ScenarioContext",
+    "SignalSnapshot",
     "StrategySpec",
+    "adapt_legacy_allocator",
     "compare_portfolios",
     "default_baseline_builders_v1",
     "equal_weight_allocator",
@@ -35,6 +40,7 @@ __all__ = [
     "lump_sum_first_day",
     "monthly_full_invest",
     "nasdaq_rule_allocator",
+    "smart_allocator",
     "nl_to_strategy_spec",
     "normalize_weights",
     "portfolio_from_orders",

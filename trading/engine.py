@@ -6,11 +6,12 @@ from dataclasses import dataclass
 import pandas as pd
 import vectorbt as vbt
 
-from trading.data import fetch_annual_returns, fetch_close_prices, get_monthly_invest_dates
+from trading.data import fetch_annual_returns, fetch_close_prices, fetch_vix_data, get_monthly_invest_dates
 from trading.scenario_context import BaselineBuilder, ScenarioContext
 from trading.strategies.dca import (
     DCAParams,
     RiskGuardConfig,
+    SignalSnapshot,
     WeightAllocator,
     build_order_plan,
     fixed_weight_allocator,
@@ -26,7 +27,7 @@ class BacktestResult:
     portfolio: vbt.Portfolio
     order_sizes: pd.DataFrame
     yearly_weights: pd.DataFrame | None
-    annual_returns: pd.Series
+    annual_returns: pd.DataFrame
     total_invested: float
     fee_rate: float = 0.0
     slippage_rate: float = 0.0
@@ -35,10 +36,15 @@ class BacktestResult:
 
 
 def _symbols_to_fetch(params: DCAParams) -> list[str]:
-    return sorted(set(params.symbols) | set(params.extra_symbols) | {params.signal_symbol})
+    all_syms = set(params.symbols) | set(params.extra_symbols) | set(params.signal_symbols)
+    if params.vix_symbol:
+        all_syms.add(params.vix_symbol)
+    return sorted(all_syms)
 
 
-def _invest_months_and_total(monthly_budget: float, price_index: pd.DatetimeIndex) -> tuple[int, float]:
+def _invest_months_and_total(
+    monthly_budget: float, price_index: pd.DatetimeIndex
+) -> tuple[int, float]:
     invest_dates = get_monthly_invest_dates(price_index)
     n = len(invest_dates)
     return n, monthly_budget * n
@@ -68,12 +74,16 @@ def _dca_backtest(
     name: str,
     strategy_close: pd.DataFrame,
     monthly_budget: float,
-    annual_returns: pd.Series,
+    annual_returns: pd.DataFrame,
     default_weights: dict[str, float],
     allocator: WeightAllocator,
     fee_rate: float = 0.0,
     slippage_rate: float = 0.0,
     risk_config: RiskGuardConfig | None = None,
+    *,
+    vix_series: pd.Series | None = None,
+    drawdown_lookback: int = 252,
+    ma_window: int = 200,
 ) -> BacktestResult:
     order_sizes, yearly_weights, decision_snapshot, risk_trigger_count = build_order_plan(
         asset_prices=strategy_close,
@@ -82,6 +92,9 @@ def _dca_backtest(
         default_weights=default_weights,
         allocator=allocator,
         risk_config=risk_config,
+        vix_series=vix_series,
+        drawdown_lookback=drawdown_lookback,
+        ma_window=ma_window,
     )
     _, total_invested = _invest_months_and_total(monthly_budget, strategy_close.index)
     portfolio = portfolio_from_orders(
@@ -118,11 +131,12 @@ def run_dca_portfolio(
     strategy_close = full_close[symbols].dropna(how="any")
 
     annual_returns = fetch_annual_returns(
-        params.signal_symbol,
-        params.start,
-        params.end,
-        use_cache=params.use_cache,
+        list(params.signal_symbols), params.start, params.end, use_cache=params.use_cache
     )
+
+    vix_series = None
+    if params.vix_symbol:
+        vix_series = fetch_vix_data(params.vix_symbol, params.start, params.end, use_cache=params.use_cache)
 
     default_w = {s: params.default_weights[s] for s in symbols if s in params.default_weights}
     if not default_w:
@@ -143,12 +157,15 @@ def run_dca_portfolio(
             max_gross_exposure=params.max_gross_exposure,
             observe_only=params.risk_observe_only,
         ),
+        vix_series=vix_series,
+        drawdown_lookback=params.drawdown_lookback,
+        ma_window=params.ma_window,
     )
 
 
 def _first_invest_day_weights(
     strategy_close: pd.DataFrame,
-    annual_returns: pd.Series,
+    annual_returns: pd.DataFrame,
     default_weights: dict[str, float],
     allocator: WeightAllocator,
 ) -> tuple[pd.Timestamp, dict[str, float]]:
@@ -162,7 +179,18 @@ def _first_invest_day_weights(
     if not base_w:
         base_w = {c: 1.0 / len(strategy_close.columns) for c in strategy_close.columns}
     base_w = normalize_weights(base_w)
-    w = allocator(invest_year=d0.year, annual_returns=annual_returns, default_weights=base_w)
+
+    prices = strategy_close.loc[d0]
+    signal = SignalSnapshot(
+        invest_date=d0,
+        invest_year=d0.year,
+        annual_returns=annual_returns,
+        drawdown=0.0,
+        ma_deviation=0.0,
+        vix=None,
+        current_prices={c: float(prices[c]) for c in strategy_close.columns},
+    )
+    w = allocator(signal, default_weights=base_w)
     merged = {c: float(w.get(c, 0.0)) for c in strategy_close.columns}
     if sum(merged.values()) <= 0:
         merged = {c: 1.0 / len(strategy_close.columns) for c in strategy_close.columns}
@@ -175,7 +203,7 @@ def run_scenarios(
     *,
     baseline_builders: Sequence[BaselineBuilder] = (),
 ) -> dict[str, BacktestResult]:
-    """主策略 + 若干 baseline；行情列为 `symbols` ∪ `extra_symbols`，由调用方保证 builder 所用 ticker 已包含在内。"""
+    """主策略 + 若干 baseline。"""
     symbols = list(params.symbols)
     needed_cols = list(dict.fromkeys([*symbols, *params.extra_symbols]))
     all_syms = _symbols_to_fetch(params)
@@ -184,11 +212,12 @@ def run_scenarios(
     strategy_close = aligned_close[symbols]
 
     annual_returns = fetch_annual_returns(
-        params.signal_symbol,
-        params.start,
-        params.end,
-        use_cache=params.use_cache,
+        list(params.signal_symbols), params.start, params.end, use_cache=params.use_cache
     )
+
+    vix_series = None
+    if params.vix_symbol:
+        vix_series = fetch_vix_data(params.vix_symbol, params.start, params.end, use_cache=params.use_cache)
 
     default_w = {s: params.default_weights[s] for s in symbols if s in params.default_weights}
     if not default_w:
@@ -209,6 +238,9 @@ def run_scenarios(
             max_gross_exposure=params.max_gross_exposure,
             observe_only=params.risk_observe_only,
         ),
+        vix_series=vix_series,
+        drawdown_lookback=params.drawdown_lookback,
+        ma_window=params.ma_window,
     )
     _, total_invested = _invest_months_and_total(params.monthly_budget, strategy_close.index)
     d0, w0 = _first_invest_day_weights(strategy_close, annual_returns, default_w, allocator)

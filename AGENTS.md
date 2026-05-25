@@ -1,6 +1,6 @@
 # Trading — DCA 回测引擎
 
-基于 **vectorbt** 的月度定投回测框架。可插拔权重分配器、多 baseline 对比、Plotly 多图报告。
+基于 **vectorbt** 的月度定投回测框架。可插拔权重分配器、多信号系统、多 baseline 对比、Plotly 多图报告。
 
 ## 快速开始
 
@@ -29,18 +29,18 @@ python3 scripts/generate_report.py
 ```
 Trading/
 ├── trading/                 # 核心库
-│   ├── data.py              # 行情下载 + Parquet 缓存
+│   ├── data.py              # 行情下载 + Parquet 缓存 + 多信号计算
 │   ├── engine.py            # BacktestResult、run_scenarios
-│   ├── strategies/dca.py    # DCAParams、WeightAllocator、订单构造
+│   ├── strategies/dca.py    # DCAParams、SignalSnapshot、WeightAllocator
 │   ├── baseline_builders.py # monthly_full_invest、lump_sum、等权
 │   ├── scenario_context.py  # ScenarioContext、BaselineBuilder 协议
-│   ├── specs.py             # StrategySpec、preset 模板
-│   ├── experiment.py        # 批量实验 + 排名
+│   ├── specs.py             # StrategySpec、preset 模板、NL→策略
+│   ├── experiment.py        # 批量实验 + 排名 + ALLOCATOR_REGISTRY
 │   ├── metrics.py           # CAGR、夏普、回撤、超额序列
 │   └── viz.py               # Plotly 图 + HTML/PNG 报告
 ├── examples/                # 独立运行脚本
 ├── scripts/                 # run_experiments、generate_report
-├── tests/                   # pytest
+├── tests/                   # pytest (10 tests)
 ├── data/cache/              # Parquet 缓存（gitignore）
 └── reports/                 # 输出目录（gitignore）
 ```
@@ -51,29 +51,64 @@ Trading/
 
 月度 DCA 参数对象（frozen dataclass）：
 
-- `symbols` — 主策略标的元组
-- `start` / `end` — 回测区间
-- `monthly_budget` — 每月投入总额
-- `default_weights` — 默认资产权重（自动归一化）
-- `signal_symbol` — 信号标的，用于计算年度涨跌幅（默认 `^IXIC`）
-- `extra_symbols` — 仅 baseline 用到的额外 ticker
-- `max_weight_per_asset` — 单资产权重上限
-- `max_gross_exposure` — 月度预算使用上限
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `symbols` | tuple | 必填 | 主策略标的 |
+| `start` / `end` | str | 必填 | 回测区间 |
+| `monthly_budget` | float | 必填 | 每月投入总额 |
+| `default_weights` | dict | 必填 | 默认权重（自动归一化） |
+| `signal_symbols` | tuple | `("^IXIC",)` | **多信号标的**，用于年收益/回撤/MA 计算 |
+| `vix_symbol` | str\|None | None | VIX 恐惧指数 ticker |
+| `drawdown_lookback` | int | 252 | 年内回撤计算窗口（交易日） |
+| `ma_window` | int | 200 | 均线偏离计算窗口 |
+| `extra_symbols` | tuple | `()` | 仅 baseline 用到的 ticker |
+| `max_weight_per_asset` | float\|None | None | 单资产权重上限 |
+| `max_gross_exposure` | float\|None | None | 月度预算使用上限 |
 
-### WeightAllocator (Protocol)
+向后兼容：`signal_symbol` 属性返回 `signal_symbols[0]`。
+
+### SignalSnapshot（新）
+
+每个定投日自动构建的不可变信号对象。分配器通过它获取所有维度的市场信号：
+
+```python
+@dataclass(frozen=True)
+class SignalSnapshot:
+    invest_date: pd.Timestamp      # 定投日
+    invest_year: int               # 定投所在自然年
+    annual_returns: pd.DataFrame   # 多指数年收益 (index=year, columns=symbols)
+    drawdown: float                # 年内回撤 (-0.20 = 跌 20%)
+    ma_deviation: float            # (close - MA) / MA
+    vix: float | None              # VIX 当日值
+    current_prices: dict           # {symbol: close_price}
+```
+
+### WeightAllocator（新协议）
 
 ```python
 def my_allocator(
-    invest_year: int,           # 定投所在自然年
-    annual_returns: pd.Series,  # signal_symbol 各年涨跌幅
-    default_weights: dict,      # 默认权重
-) -> dict[str, float]:          # 返回权重（会被归一化）
+    signal: SignalSnapshot,    # 所有信号维度
+    default_weights: dict,     # 默认权重
+) -> dict[str, float]:         # 返回权重（会被归一化）
 ```
 
-内置：
-- `fixed_weight_allocator` — 始终返回 default_weights
-- `nasdaq_rule_allocator` — 上一年涨 >20% 偏 QQQ，跌 <0 偏 TQQQ
-- `equal_weight_allocator` — 等权
+内置分配器：
+
+| 分配器 | 使用的信号 | 规则 |
+|--------|-----------|------|
+| `fixed_weight_allocator` | 无 | 始终返回 default_weights |
+| `equal_weight_allocator` | 无 | 等权 |
+| `nasdaq_rule_allocator` | `annual_returns["^IXIC"]` | 上年涨>20%偏QQQ，跌<0偏TQQQ |
+| `smart_allocator` | `drawdown` + `vix` + `annual_returns` | 恐慌+高波动重仓TQQQ，牛年后保守 |
+
+### 向后兼容适配器
+
+旧签名的分配器可用 `adapt_legacy_allocator` 包装：
+
+```python
+def old_alloc(invest_year, annual_returns, default_weights) -> dict: ...
+wrapped = adapt_legacy_allocator(old_alloc)
+```
 
 ### BaselineBuilder (Protocol)
 
@@ -89,19 +124,28 @@ def my_baseline(ctx: ScenarioContext) -> BacktestResult: ...
 ### 运行模型
 
 ```
-行情下载 → 对齐 close → 按月生成 order_sizes → vectorbt.Portfolio.from_orders
-→ BacktestResult → metrics / viz
+行情下载 → 对齐 close → 计算多信号(drawdown/MA/VIX)
+→ 按月构建 SignalSnapshot → 分配器决策 → order_sizes
+→ vectorbt.Portfolio.from_orders → BacktestResult → metrics / viz
 ```
 
 - `init_cash` = `total_invested`，`cash_sharing=True`
 - 定投日 = 每月第一个可用交易日
-- 分配器按自然年调用一次，同一年各月权重相同
+- 决策快照包含所有信号维度（drawdown、MA 偏离、VIX）
 
 ## 新增一个分配器
 
-1. 在 `trading/strategies/dca.py` 实现符合 `WeightAllocator` 签名的函数
-2. 传入 `run_dca_portfolio(..., allocator=my_allocator)` 或 `run_scenarios`
-3. 若需按自然语言触发，在 `specs.py` 的 `nl_to_strategy_spec` 和 `SUPPORTED_ALLOCATORS` 中注册
+1. 在 `trading/strategies/dca.py` 实现符合 `WeightAllocator` 签名的函数：
+
+```python
+def my_alloc(signal: SignalSnapshot, dw: dict) -> dict:
+    if signal.drawdown < -0.3:
+        return {"QQQ": 0.4, "TQQQ": 0.6}  # 恐慌抄底
+    return dw
+```
+
+2. 在 `experiment.py` 的 `ALLOCATOR_REGISTRY` 注册
+3. 在 `specs.py` 的 `SUPPORTED_ALLOCATORS` 和 `nl_to_strategy_spec` 中添加
 
 ## 环境
 

@@ -6,7 +6,7 @@ from typing import Any
 
 from trading.strategies.dca import DCAParams
 
-SUPPORTED_ALLOCATORS = ("fixed", "nasdaq_rule", "equal_weight")
+SUPPORTED_ALLOCATORS = ("fixed", "nasdaq_rule", "equal_weight", "smart")
 
 
 @dataclass(frozen=True)
@@ -20,7 +20,10 @@ class StrategySpec:
     monthly_budget: float
     default_weights: dict[str, float]
     allocator: str = "fixed"
-    signal_symbol: str = "^IXIC"
+    signal_symbols: tuple[str, ...] = ("^IXIC",)
+    vix_symbol: str | None = None
+    drawdown_lookback: int = 252
+    ma_window: int = 200
     benchmark_symbol: str = "QQQ"
     extra_symbols: tuple[str, ...] = ()
     use_cache: bool = True
@@ -51,7 +54,10 @@ class StrategySpec:
             end=self.end,
             monthly_budget=self.monthly_budget,
             default_weights=self.default_weights,
-            signal_symbol=self.signal_symbol,
+            signal_symbols=self.signal_symbols,
+            vix_symbol=self.vix_symbol,
+            drawdown_lookback=self.drawdown_lookback,
+            ma_window=self.ma_window,
             benchmark_symbol=self.benchmark_symbol,
             extra_symbols=self.extra_symbols,
             use_cache=self.use_cache,
@@ -72,7 +78,10 @@ class StrategySpec:
             monthly_budget=float(payload["monthly_budget"]),
             default_weights={str(k): float(v) for k, v in dict(payload["default_weights"]).items()},
             allocator=str(payload.get("allocator", "fixed")),
-            signal_symbol=str(payload.get("signal_symbol", "^IXIC")),
+            signal_symbols=tuple(payload.get("signal_symbols", ("^IXIC",))),
+            vix_symbol=_maybe_str(payload.get("vix_symbol")),
+            drawdown_lookback=int(payload.get("drawdown_lookback", 252)),
+            ma_window=int(payload.get("ma_window", 200)),
             benchmark_symbol=str(payload.get("benchmark_symbol", "QQQ")),
             extra_symbols=tuple(payload.get("extra_symbols", ())),
             use_cache=bool(payload.get("use_cache", True)),
@@ -90,8 +99,14 @@ def _maybe_float(value: Any) -> float | None:
     return float(value)
 
 
+def _maybe_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
 def preset_strategy_specs() -> list[StrategySpec]:
-    """内置三种策略模板，方便快速对比。"""
+    """内置策略模板。"""
     return [
         StrategySpec(
             name="balanced_fixed",
@@ -123,25 +138,46 @@ def preset_strategy_specs() -> list[StrategySpec]:
             max_weight_per_asset=0.9,
             max_gross_exposure=0.85,
         ),
+        StrategySpec(
+            name="smart_signal_fusion",
+            symbols=("QQQ", "TQQQ"),
+            start="2016-01-01",
+            end="2026-01-01",
+            monthly_budget=5000.0,
+            default_weights={"QQQ": 0.7, "TQQQ": 0.3},
+            allocator="smart",
+            signal_symbols=("^IXIC",),
+            vix_symbol="^VIX",
+            drawdown_lookback=252,
+            ma_window=200,
+        ),
     ]
 
 
 def nl_to_strategy_spec(prompt: str, *, name: str = "nl_generated_strategy") -> StrategySpec:
-    """MVP: 将自然语言转为策略草案（后续可替换为 LLM 调用）。"""
+    """MVP: 将自然语言转为策略草案。"""
     text = prompt.lower()
     symbols = _extract_symbols(prompt) or ("QQQ", "TQQQ")
+
+    # 分配器检测
     allocator = "fixed"
-    if "nasdaq_rule" in text or "纳指规则" in text or "动量" in text:
+    if "smart" in text or "多信号" in text or "vix" in text:
+        allocator = "smart"
+    elif "nasdaq_rule" in text or "纳指规则" in text or "动量" in text:
         allocator = "nasdaq_rule"
     elif "等权" in text or "equal weight" in text:
         allocator = "equal_weight"
 
+    # 激进/保守
     if "激进" in text or "aggressive" in text:
         qqq_weight, tqqq_weight = 0.6, 0.4
     elif "保守" in text or "defensive" in text:
         qqq_weight, tqqq_weight = 0.85, 0.15
     else:
         qqq_weight, tqqq_weight = 0.75, 0.25
+
+    # VIX 检测
+    vix_sym = "^VIX" if ("vix" in text or "恐惧" in text) else None
 
     default_weights = _guess_weights(symbols, qqq_weight, tqqq_weight)
     return StrategySpec(
@@ -152,6 +188,7 @@ def nl_to_strategy_spec(prompt: str, *, name: str = "nl_generated_strategy") -> 
         monthly_budget=5000.0,
         default_weights=default_weights,
         allocator=allocator,
+        vix_symbol=vix_sym,
     )
 
 
@@ -167,7 +204,9 @@ def _extract_symbols(prompt: str) -> tuple[str, ...]:
     return tuple(unique[:8])
 
 
-def _guess_weights(symbols: tuple[str, ...], qqq_weight: float, tqqq_weight: float) -> dict[str, float]:
+def _guess_weights(
+    symbols: tuple[str, ...], qqq_weight: float, tqqq_weight: float
+) -> dict[str, float]:
     if len(symbols) == 1:
         return {symbols[0]: 1.0}
     if "QQQ" in symbols and "TQQQ" in symbols:

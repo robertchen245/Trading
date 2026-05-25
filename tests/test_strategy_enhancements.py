@@ -6,6 +6,7 @@ import unittest
 from dataclasses import replace
 from unittest.mock import patch
 
+import numpy as np
 import pandas as pd
 
 fake_vectorbt = types.ModuleType("vectorbt")
@@ -38,7 +39,14 @@ sys.modules["vectorbt"] = fake_vectorbt
 
 import trading.engine as engine
 from trading.engine import run_dca_portfolio
-from trading.strategies.dca import DCAParams, RiskGuardConfig, build_order_plan, fixed_weight_allocator
+from trading.strategies.dca import (
+    DCAParams,
+    RiskGuardConfig,
+    SignalSnapshot,
+    build_order_plan,
+    fixed_weight_allocator,
+    normalize_weights,
+)
 
 engine.vbt.Portfolio = _FakePortfolioFactory
 
@@ -47,9 +55,9 @@ class StrategyEnhancementsTests(unittest.TestCase):
     def test_weight_cap_generates_risk_snapshot(self) -> None:
         index = pd.to_datetime(["2021-01-04", "2021-02-01"])
         prices = pd.DataFrame({"AAA": [100.0, 110.0], "BBB": [50.0, 55.0]}, index=index)
-        annual_returns = pd.Series({2020: 0.1})
+        annual_returns = pd.DataFrame({"^TEST": [0.1]}, index=[2020])
 
-        def all_in_aaa(**_kwargs) -> dict[str, float]:
+        def all_in_aaa(signal: SignalSnapshot, default_weights: dict) -> dict[str, float]:
             return {"AAA": 1.0, "BBB": 0.0}
 
         _, _, decision_snapshot, risk_trigger_count = build_order_plan(
@@ -69,7 +77,7 @@ class StrategyEnhancementsTests(unittest.TestCase):
     def test_gross_exposure_cap_reduces_allocated_budget(self) -> None:
         index = pd.to_datetime(["2021-01-04", "2021-02-01"])
         prices = pd.DataFrame({"AAA": [100.0, 110.0], "BBB": [100.0, 100.0]}, index=index)
-        annual_returns = pd.Series({2020: 0.1})
+        annual_returns = pd.DataFrame({"^TEST": [0.1]}, index=[2020])
 
         order_sizes, _, decision_snapshot, risk_trigger_count = build_order_plan(
             asset_prices=prices,
@@ -87,7 +95,10 @@ class StrategyEnhancementsTests(unittest.TestCase):
 
     @patch("trading.engine.fetch_annual_returns")
     @patch("trading.engine.fetch_close_prices")
-    def test_costs_reduce_final_value(self, mock_fetch_close_prices, mock_fetch_annual_returns) -> None:
+    @patch("trading.engine.fetch_vix_data")
+    def test_costs_reduce_final_value(
+        self, mock_fetch_vix, mock_fetch_close_prices, mock_fetch_annual_returns
+    ) -> None:
         index = pd.to_datetime(
             ["2020-01-02", "2020-01-31", "2020-02-03", "2020-02-28", "2020-03-02", "2020-03-31"]
         )
@@ -100,7 +111,10 @@ class StrategyEnhancementsTests(unittest.TestCase):
             index=index,
         )
         mock_fetch_close_prices.return_value = close
-        mock_fetch_annual_returns.return_value = pd.Series({2019: 0.12, 2020: 0.08})
+        mock_fetch_annual_returns.return_value = pd.DataFrame(
+            {"^IXIC": [0.12]}, index=[2019]
+        )
+        mock_fetch_vix.return_value = None
 
         base_params = DCAParams(
             symbols=("QQQ", "TQQQ"),
@@ -108,7 +122,7 @@ class StrategyEnhancementsTests(unittest.TestCase):
             end="2020-04-01",
             monthly_budget=1000.0,
             default_weights={"QQQ": 0.7, "TQQQ": 0.3},
-            signal_symbol="^IXIC",
+            signal_symbols=("^IXIC",),
             use_cache=False,
         )
         result_no_cost = run_dca_portfolio(base_params)
@@ -117,6 +131,63 @@ class StrategyEnhancementsTests(unittest.TestCase):
         final_no_cost = float(result_no_cost.portfolio.value().iloc[-1])
         final_with_cost = float(result_with_cost.portfolio.value().iloc[-1])
         self.assertLess(final_with_cost, final_no_cost)
+
+    def test_signal_snapshot_fields(self) -> None:
+        """SignalSnapshot should contain all signal dimensions."""
+        index = pd.to_datetime(["2021-01-04"])
+        prices = pd.DataFrame({"AAA": [100.0]}, index=index)
+        annual_returns = pd.DataFrame({"^IXIC": [0.1], "^GSPC": [0.05]}, index=[2020])
+
+        captured: list[SignalSnapshot] = []
+
+        def capture_alloc(signal: SignalSnapshot, dw: dict) -> dict[str, float]:
+            captured.append(signal)
+            return dw
+
+        build_order_plan(
+            asset_prices=prices,
+            monthly_budget=1000.0,
+            annual_returns=annual_returns,
+            default_weights={"AAA": 1.0},
+            allocator=capture_alloc,
+        )
+
+        s = captured[0]
+        self.assertEqual(s.invest_year, 2021)
+        self.assertEqual(list(s.annual_returns.columns), ["^IXIC", "^GSPC"])
+        self.assertIsInstance(s.drawdown, float)
+        self.assertIsInstance(s.ma_deviation, float)
+        self.assertEqual(s.vix, None)
+        self.assertAlmostEqual(s.current_prices["AAA"], 100.0)
+
+    def test_smart_allocator_panic_mode(self) -> None:
+        """smart_allocator 应在 drawdown < -20% 且 VIX > 25 时切换到激进模式。"""
+        from trading.strategies.dca import smart_allocator
+
+        annual_returns = pd.DataFrame({"^IXIC": [0.05]}, index=[2020])
+        signal = SignalSnapshot(
+            invest_date=pd.Timestamp("2021-01-04"),
+            invest_year=2021,
+            annual_returns=annual_returns,
+            drawdown=-0.25,
+            ma_deviation=-0.15,
+            vix=30.0,
+            current_prices={"QQQ": 300.0, "TQQQ": 50.0},
+        )
+
+        w = smart_allocator(signal, {"QQQ": 0.7, "TQQQ": 0.3})
+        self.assertAlmostEqual(w["TQQQ"], 0.5, places=6)
+        self.assertAlmostEqual(w["QQQ"], 0.5, places=6)
+
+
+class SignalTests(unittest.TestCase):
+    def test_annual_returns_dataframe(self) -> None:
+        """fetch_annual_returns 现在返回 DataFrame 而非 Series。"""
+        from trading.data import fetch_annual_returns
+
+        ann = fetch_annual_returns(["^IXIC", "^GSPC"], start="2023-01-01", end="2024-01-01", use_cache=True)
+        self.assertIsInstance(ann, pd.DataFrame)
+        self.assertGreaterEqual(len(ann.columns), 1)
 
 
 if __name__ == "__main__":
