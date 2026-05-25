@@ -8,3 +8,4 @@ reports/*.html
 reports/*.csv
 reports/*.png
 .ipynb_checkpoints/
+*.egg-info/
