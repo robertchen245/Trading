@@ -7,5 +7,7 @@ data/cache/
 reports/*.html
 reports/*.csv
 reports/*.png
+reports/*_package/
+reports/latest_package/
 .ipynb_checkpoints/
 *.egg-info/

@@ -91,6 +91,30 @@ class RebalancePlanTests(unittest.TestCase):
         # 应该和原始一样
         self.assertTrue((adjusted == order_sizes).all().all())
 
+    def test_tilt_reallocates_new_budget_without_selling(self) -> None:
+        """tilt 模式不卖出，但会把新资金转向低占比资产。"""
+        index = pd.to_datetime(["2020-01-02", "2020-02-03"])
+        prices = pd.DataFrame(
+            {"QQQ": [100.0, 100.0], "TQQQ": [50.0, 50.0]},
+            index=index,
+        )
+        order_sizes = pd.DataFrame(0.0, index=index, columns=["QQQ", "TQQQ"])
+        order_sizes.loc[index[0], "QQQ"] = 10.0
+        order_sizes.loc[index[1], "QQQ"] = 5.0
+        order_sizes.loc[index[1], "TQQQ"] = 10.0
+
+        adjusted = apply_rebalance_to_plan(
+            order_sizes,
+            prices,
+            pd.DatetimeIndex(index),
+            max_weight=0.75,
+            mode="tilt",
+        )
+
+        self.assertGreaterEqual(adjusted.loc[index[1], "QQQ"], 0.0)
+        self.assertLess(adjusted.loc[index[1], "QQQ"], order_sizes.loc[index[1], "QQQ"])
+        self.assertGreater(adjusted.loc[index[1], "TQQQ"], order_sizes.loc[index[1], "TQQQ"])
+
 
 if __name__ == "__main__":
     unittest.main()

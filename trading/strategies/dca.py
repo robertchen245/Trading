@@ -131,6 +131,62 @@ def equal_weight_allocator(
     return {s: 1.0 / n for s in symbols}
 
 
+def _cash_like_symbols(default_weights: dict[str, float]) -> list[str]:
+    preferred = ("CASH", "BIL", "SGOV", "SHY")
+    keys = list(default_weights)
+    out = [symbol for symbol in preferred if symbol in default_weights]
+    out.extend(symbol for symbol in keys if symbol not in out and "cash" in symbol.lower())
+    return out
+
+
+def trend_follow_allocator(
+    signal: SignalSnapshot,
+    default_weights: dict[str, float],
+) -> dict[str, float]:
+    """Risk-off allocator for MA trend filters.
+
+    When the first strategy asset is below its moving average, move the new
+    monthly contribution to a cash-like sleeve if one is present. This lets the
+    engine approximate common "asset above 200DMA or cash" strategies.
+    """
+    cash_symbols = _cash_like_symbols(default_weights)
+    if signal.ma_deviation < 0 and cash_symbols:
+        return normalize_weights({symbol: 1.0 if symbol == cash_symbols[0] else 0.0 for symbol in default_weights})
+    return normalize_weights(default_weights)
+
+
+def momentum_rotation_allocator(
+    signal: SignalSnapshot,
+    default_weights: dict[str, float],
+) -> dict[str, float]:
+    """Rotate the monthly contribution into last year's strongest asset.
+
+    If all tracked assets had negative previous-year returns and a cash-like
+    symbol exists, the allocator goes to cash. This is intentionally simple but
+    covers dual-momentum and ETF rotation families that fixed DCA cannot mimic.
+    """
+    ann = signal.annual_returns
+    prev_year = signal.invest_year - 1
+    if not isinstance(ann, pd.DataFrame) or prev_year not in ann.index:
+        return normalize_weights(default_weights)
+
+    cash_symbols = set(_cash_like_symbols(default_weights))
+    candidates = [symbol for symbol in default_weights if symbol not in cash_symbols and symbol in ann.columns]
+    if not candidates:
+        return normalize_weights(default_weights)
+
+    prev_returns = pd.to_numeric(ann.loc[prev_year, candidates], errors="coerce").dropna()
+    if prev_returns.empty:
+        return normalize_weights(default_weights)
+
+    best_symbol = str(prev_returns.idxmax())
+    if float(prev_returns.max()) <= 0 and cash_symbols:
+        cash = next(symbol for symbol in default_weights if symbol in cash_symbols)
+        return normalize_weights({symbol: 1.0 if symbol == cash else 0.0 for symbol in default_weights})
+
+    return normalize_weights({symbol: 1.0 if symbol == best_symbol else 0.0 for symbol in default_weights})
+
+
 # ── 多信号融合示例分配器 ───────────────────────────────
 
 def smart_allocator(
@@ -206,6 +262,13 @@ class DCAParams:
     extra_symbols: tuple[str, ...] = ()
     """仅用于 baseline 等、不在主策略 `symbols` 中的行情列；须覆盖所有 builder 用到的 ticker。"""
     use_cache: bool = True
+    data_source: str = "auto"
+    """行情数据源: auto/local/yfinance/stooq。auto 会优先用缓存与本地数据。"""
+    local_data_dir: str | None = None
+    """本地 CSV/parquet 行情目录；为空时使用 data/local。"""
+    yf_max_retries: int = 3
+    yf_retry_sleep: float = 1.0
+    allow_stale_cache: bool = True
     fee_rate: float = 0.0
     slippage_rate: float = 0.0
     max_weight_per_asset: float | None = None
@@ -224,6 +287,14 @@ class DCAParams:
             raise ValueError("max_gross_exposure must be > 0.")
         if self.rebalance_max_weight is not None and not (0 < self.rebalance_max_weight <= 1.0):
             raise ValueError("rebalance_max_weight must be in (0, 1].")
+        if self.rebalance_mode not in {"sell", "tilt"}:
+            raise ValueError("rebalance_mode must be 'sell' or 'tilt'.")
+        if self.data_source not in {"auto", "auto_ibkr", "local", "ibkr", "yfinance", "stooq"}:
+            raise ValueError("data_source must be auto/auto_ibkr/local/ibkr/yfinance/stooq.")
+        if self.yf_max_retries <= 0:
+            raise ValueError("yf_max_retries must be > 0.")
+        if self.yf_retry_sleep < 0:
+            raise ValueError("yf_retry_sleep must be >= 0.")
 
 
 # ── RiskGuardConfig ─────────────────────────────────────

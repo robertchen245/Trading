@@ -141,8 +141,52 @@ def apply_rebalance_to_plan(
         return order_sizes
 
     if mode == "tilt":
-        # tilt 模式不在订单层面操作，由 build_order_plan 使用 compute_tilt_weights
-        return order_sizes
+        adjusted = order_sizes.copy()
+        cumulative: dict[str, float] = {c: 0.0 for c in order_sizes.columns}
+
+        for invest_date in invest_dates:
+            prices = asset_prices.loc[invest_date]
+            current_prices = {
+                s: float(prices[s]) for s in order_sizes.columns if s in prices.index
+            }
+            total_value = sum(
+                cumulative.get(s, 0.0) * current_prices.get(s, 0.0)
+                for s in order_sizes.columns
+            )
+
+            planned_value = {
+                symbol: max(0.0, float(order_sizes.loc[invest_date, symbol]) * current_prices.get(symbol, 0.0))
+                for symbol in order_sizes.columns
+            }
+            planned_budget = sum(planned_value.values())
+            if total_value > 0 and planned_budget > 0:
+                planned_weights = {
+                    symbol: value / planned_budget
+                    for symbol, value in planned_value.items()
+                }
+                tilted_weights = compute_tilt_weights(
+                    current_shares=cumulative,
+                    current_prices=current_prices,
+                    total_value=total_value,
+                    target_weights=planned_weights,
+                    default_weights=planned_weights,
+                    max_weight=max_weight,
+                )
+                if tilted_weights != planned_weights:
+                    for symbol in order_sizes.columns:
+                        price = current_prices.get(symbol, 0.0)
+                        adjusted.loc[invest_date, symbol] = (
+                            planned_budget * tilted_weights.get(symbol, 0.0) / price
+                            if price > 0
+                            else 0.0
+                        )
+
+            for symbol in order_sizes.columns:
+                buy_shares = adjusted.loc[invest_date, symbol]
+                if buy_shares > 0:
+                    cumulative[symbol] = cumulative.get(symbol, 0.0) + buy_shares
+
+        return adjusted
 
     # sell 模式
     adjusted = order_sizes.copy()

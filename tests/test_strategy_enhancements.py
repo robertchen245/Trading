@@ -38,20 +38,39 @@ fake_vectorbt.Portfolio = _FakePortfolioFactory
 sys.modules["vectorbt"] = fake_vectorbt
 
 import trading.engine as engine
-from trading.engine import run_dca_portfolio
+from trading.engine import portfolio_from_orders, run_dca_portfolio
 from trading.strategies.dca import (
     DCAParams,
     RiskGuardConfig,
     SignalSnapshot,
     build_order_plan,
     fixed_weight_allocator,
+    momentum_rotation_allocator,
     normalize_weights,
+    trend_follow_allocator,
 )
 
 engine.vbt.Portfolio = _FakePortfolioFactory
 
 
 class StrategyEnhancementsTests(unittest.TestCase):
+    def test_portfolio_from_orders_falls_back_when_vectorbt_fails(self) -> None:
+        class _BrokenFactory:
+            @staticmethod
+            def from_orders(*_args, **_kwargs):
+                raise RuntimeError("vectorbt unavailable")
+
+        previous = engine.vbt.Portfolio
+        engine.vbt.Portfolio = _BrokenFactory
+        try:
+            index = pd.to_datetime(["2021-01-04", "2021-01-05"])
+            close = pd.DataFrame({"AAA": [100.0, 110.0]}, index=index)
+            orders = pd.DataFrame({"AAA": [1.0, 0.0]}, index=index)
+            portfolio = portfolio_from_orders(close, orders, total_invested=100.0)
+            self.assertAlmostEqual(float(portfolio.value().iloc[-1]), 110.0, places=6)
+        finally:
+            engine.vbt.Portfolio = previous
+
     def test_weight_cap_generates_risk_snapshot(self) -> None:
         index = pd.to_datetime(["2021-01-04", "2021-02-01"])
         prices = pd.DataFrame({"AAA": [100.0, 110.0], "BBB": [50.0, 55.0]}, index=index)
@@ -178,6 +197,45 @@ class StrategyEnhancementsTests(unittest.TestCase):
         w = smart_allocator(signal, {"QQQ": 0.7, "TQQQ": 0.3})
         self.assertAlmostEqual(w["TQQQ"], 0.5, places=6)
         self.assertAlmostEqual(w["QQQ"], 0.5, places=6)
+
+    def test_trend_follow_allocator_moves_to_cash_below_ma(self) -> None:
+        signal = SignalSnapshot(
+            invest_date=pd.Timestamp("2021-01-04"),
+            invest_year=2021,
+            annual_returns=pd.DataFrame(),
+            ma_deviation=-0.05,
+            current_prices={"QQQ": 300.0, "CASH": 1.0},
+        )
+
+        w = trend_follow_allocator(signal, {"QQQ": 0.8, "CASH": 0.2})
+        self.assertAlmostEqual(w["CASH"], 1.0, places=6)
+        self.assertAlmostEqual(w["QQQ"], 0.0, places=6)
+
+    def test_momentum_rotation_allocator_selects_winner(self) -> None:
+        annual_returns = pd.DataFrame({"SPY": [0.05], "TLT": [0.12], "GLD": [-0.02]}, index=[2020])
+        signal = SignalSnapshot(
+            invest_date=pd.Timestamp("2021-01-04"),
+            invest_year=2021,
+            annual_returns=annual_returns,
+            current_prices={"SPY": 100.0, "TLT": 120.0, "GLD": 170.0},
+        )
+
+        w = momentum_rotation_allocator(signal, {"SPY": 0.33, "TLT": 0.34, "GLD": 0.33})
+        self.assertAlmostEqual(w["TLT"], 1.0, places=6)
+        self.assertAlmostEqual(w["SPY"], 0.0, places=6)
+
+    def test_momentum_rotation_allocator_uses_cash_when_all_negative(self) -> None:
+        annual_returns = pd.DataFrame({"SPY": [-0.10], "TLT": [-0.03]}, index=[2020])
+        signal = SignalSnapshot(
+            invest_date=pd.Timestamp("2021-01-04"),
+            invest_year=2021,
+            annual_returns=annual_returns,
+            current_prices={"SPY": 100.0, "TLT": 120.0, "CASH": 1.0},
+        )
+
+        w = momentum_rotation_allocator(signal, {"SPY": 0.5, "TLT": 0.5, "CASH": 0.0})
+        self.assertAlmostEqual(w["CASH"], 1.0, places=6)
+        self.assertAlmostEqual(w["SPY"], 0.0, places=6)
 
 
 class SignalTests(unittest.TestCase):

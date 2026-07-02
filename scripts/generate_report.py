@@ -3,15 +3,21 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from trading.baseline_builders import default_baseline_builders_v1
 from trading.engine import run_scenarios
 from trading.metrics import compare_portfolios
+from trading.reporting import build_report_package, write_codex_artifact, write_report_package
 from trading.strategies.dca import DCAParams, fixed_weight_allocator, nasdaq_rule_allocator
 from trading.viz import (
     fig_drawdown,
@@ -24,7 +30,6 @@ from trading.viz import (
     write_report_html,
 )
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
 REPORTS_DIR = PROJECT_ROOT / "reports"
 
 
@@ -35,7 +40,7 @@ def _default_params() -> DCAParams:
         end="2026-01-01",
         monthly_budget=5000.0,
         default_weights={"QQQ": 0.7, "TQQQ": 0.3},
-        signal_symbol="^IXIC",
+        signal_symbols=("^IXIC",),
         benchmark_symbol="QQQ",
         use_cache=True,
     )
@@ -50,6 +55,11 @@ def _params_from_args(args: argparse.Namespace) -> DCAParams:
         max_weight_per_asset=args.max_weight_per_asset,
         max_gross_exposure=args.max_gross_exposure,
         risk_observe_only=args.risk_observe_only,
+        data_source=args.data_source,
+        local_data_dir=args.local_data_dir,
+        yf_max_retries=args.yf_retries,
+        yf_retry_sleep=args.yf_retry_sleep,
+        allow_stale_cache=not args.no_stale_cache,
     )
 
 
@@ -62,8 +72,8 @@ def main() -> None:
         default="fixed",
         help="主策略权重规则",
     )
-    parser.add_argument("--fee-rate", type=float, default=0.0, help="单笔成交手续费率（如 0.001=0.1%）")
-    parser.add_argument("--slippage-rate", type=float, default=0.0, help="单笔成交滑点率（如 0.0005=0.05%）")
+    parser.add_argument("--fee-rate", type=float, default=0.0, help="单笔成交手续费率（如 0.001=0.1%%）")
+    parser.add_argument("--slippage-rate", type=float, default=0.0, help="单笔成交滑点率（如 0.0005=0.05%%）")
     parser.add_argument(
         "--max-weight-per-asset",
         type=float,
@@ -74,13 +84,30 @@ def main() -> None:
         "--max-gross-exposure",
         type=float,
         default=None,
-        help="每次定投预算使用上限（如 0.8 表示最多投入月预算 80%）",
+        help="每次定投预算使用上限（如 0.8 表示最多投入月预算 80%%）",
     )
     parser.add_argument(
         "--risk-observe-only",
         action="store_true",
         help="仅统计风控触发，不实际截断下单",
     )
+    parser.add_argument(
+        "--data-source",
+        default="auto",
+        choices=("auto", "auto_ibkr", "local", "ibkr", "yfinance", "stooq"),
+        help="行情数据源",
+    )
+    parser.add_argument("--local-data-dir", default=None, help="本地行情 CSV/parquet 目录")
+    parser.add_argument("--yf-retries", type=int, default=3, help="yfinance 单标的最大重试次数")
+    parser.add_argument("--yf-retry-sleep", type=float, default=1.0, help="yfinance 重试等待秒数")
+    parser.add_argument("--no-stale-cache", action="store_true", help="所有在线源失败时不使用旧缓存兜底")
+    parser.add_argument(
+        "--format",
+        default="all",
+        choices=("html", "package", "codex", "all"),
+        help="输出格式",
+    )
+    parser.add_argument("--package-dir", default=None, help="通用报告包输出目录")
     args = parser.parse_args()
 
     params = _params_from_args(args)
@@ -97,6 +124,7 @@ def main() -> None:
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     prefix = REPORTS_DIR / f"report_{ts}"
+    package_dir = Path(args.package_dir) if args.package_dir else REPORTS_DIR / f"report_{ts}_package"
 
     strategy = results["strategy"]
     figures: list[tuple[str, object]] = [
@@ -112,13 +140,27 @@ def main() -> None:
     if strategy.yearly_weights is not None and not strategy.yearly_weights.empty:
         figures.append(("年度目标权重", fig_yearly_weights_stacked(strategy.yearly_weights)))
 
-    table.to_csv(prefix.with_suffix(".metrics.csv"))
-    cost_impact.to_csv(prefix.with_name(f"{prefix.name}.cost_impact.csv"))
-    if strategy.decision_snapshot is not None and not strategy.decision_snapshot.empty:
-        strategy.decision_snapshot.to_csv(prefix.with_name(f"{prefix.name}.decision_snapshot.csv"))
-    write_report_html(figures, prefix.with_suffix(".html"))
+    package = build_report_package(
+        results,
+        title="Trading Backtest Report",
+        params=params,
+        allocator_name=args.allocator,
+    )
 
-    if args.png:
+    if args.format in {"html", "all"}:
+        table.to_csv(prefix.with_suffix(".metrics.csv"))
+        cost_impact.to_csv(prefix.with_name(f"{prefix.name}.cost_impact.csv"))
+        if strategy.decision_snapshot is not None and not strategy.decision_snapshot.empty:
+            strategy.decision_snapshot.to_csv(prefix.with_name(f"{prefix.name}.decision_snapshot.csv"))
+        write_report_html(figures, prefix.with_suffix(".html"))
+
+    if args.format in {"package", "codex", "all"}:
+        write_report_package(package, package_dir)
+
+    if args.format in {"codex", "all"}:
+        write_codex_artifact(package, package_dir)
+
+    if args.png and args.format in {"html", "all"}:
         for title, fig in figures:
             safe = "".join(c if c.isalnum() else "_" for c in title)[:40]
             try:
@@ -126,11 +168,17 @@ def main() -> None:
             except Exception as e:  # noqa: BLE001
                 print(f"跳过 PNG「{title}」: {e}")
 
-    print(f"已写入: {prefix.with_suffix('.html')}")
-    print(f"指标 CSV: {prefix.with_suffix('.metrics.csv')}")
-    print(f"成本对比 CSV: {prefix.with_name(f'{prefix.name}.cost_impact.csv')}")
-    if strategy.decision_snapshot is not None and not strategy.decision_snapshot.empty:
-        print(f"决策快照 CSV: {prefix.with_name(f'{prefix.name}.decision_snapshot.csv')}")
+    if args.format in {"html", "all"}:
+        print(f"已写入: {prefix.with_suffix('.html')}")
+        print(f"指标 CSV: {prefix.with_suffix('.metrics.csv')}")
+        print(f"成本对比 CSV: {prefix.with_name(f'{prefix.name}.cost_impact.csv')}")
+        if strategy.decision_snapshot is not None and not strategy.decision_snapshot.empty:
+            print(f"决策快照 CSV: {prefix.with_name(f'{prefix.name}.decision_snapshot.csv')}")
+    if args.format in {"package", "codex", "all"}:
+        print(f"通用报告包: {package_dir}")
+    if args.format in {"codex", "all"}:
+        print(f"Codex artifact: {package_dir / 'codex_manifest.json'}")
+        print(f"Codex snapshot: {package_dir / 'codex_snapshot.json'}")
 
 
 def _cost_impact_table(

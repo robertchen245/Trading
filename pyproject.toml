@@ -17,7 +17,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["jupyter>=1.0", "kaleido>=0.2.1"]
+dev = ["jupyter>=1.0", "kaleido>=0.2.1", "pytest>=8.0"]
+ibkr = ["ib_insync>=0.9.86"]
 
 [project.scripts]
 trading = "trading.cli:main"

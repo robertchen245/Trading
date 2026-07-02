@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
 
 import pandas as pd
-import vectorbt as vbt
 
 from trading.data import fetch_annual_returns, fetch_close_prices, fetch_vix_data, get_monthly_invest_dates
 from trading.rebalance import apply_rebalance_to_plan
@@ -20,12 +20,63 @@ from trading.strategies.dca import (
 )
 
 
+class _VectorbtProxy:
+    def __init__(self) -> None:
+        object.__setattr__(self, "_overrides", {})
+
+    def __getattr__(self, name: str) -> Any:
+        overrides = object.__getattribute__(self, "_overrides")
+        if name in overrides:
+            return overrides[name]
+        import vectorbt as module
+
+        return getattr(module, name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        object.__getattribute__(self, "_overrides")[name] = value
+
+
+vbt = _VectorbtProxy()
+
+
+class _FallbackPortfolio:
+    """Small local portfolio value engine used when vectorbt is unavailable."""
+
+    def __init__(
+        self,
+        close: pd.DataFrame,
+        size: pd.DataFrame,
+        init_cash: float,
+        fees: float,
+        slippage: float,
+        reason: Exception,
+    ) -> None:
+        self._close = close
+        self._size = size.reindex_like(close).fillna(0.0)
+        self._init_cash = float(init_cash)
+        self._fees = float(fees)
+        self._slippage = float(slippage)
+        self.fallback_reason = reason
+
+    def value(self) -> pd.Series:
+        notional = self._size * self._close
+        costs = notional.abs().sum(axis=1) * (self._fees + self._slippage)
+        cash = self._init_cash - (notional.sum(axis=1) + costs).cumsum()
+        positions = self._size.cumsum()
+        value = cash + (positions * self._close).sum(axis=1)
+        value.name = "value"
+        return value
+
+    def stats(self) -> pd.Series:
+        return pd.Series(dtype=float)
+
+
 @dataclass(frozen=True)
 class BacktestResult:
     """单次回测结果：含组合、订单与各年权重（若有）。"""
 
     name: str
-    portfolio: vbt.Portfolio
+    portfolio: Any
     order_sizes: pd.DataFrame
     yearly_weights: pd.DataFrame | None
     annual_returns: pd.DataFrame
@@ -46,6 +97,16 @@ def _symbols_to_fetch(params: DCAParams) -> list[str]:
     return sorted(all_syms)
 
 
+def _data_kwargs(params: DCAParams) -> dict[str, object]:
+    return {
+        "data_source": params.data_source,
+        "local_data_dir": params.local_data_dir,
+        "yf_max_retries": params.yf_max_retries,
+        "yf_retry_sleep": params.yf_retry_sleep,
+        "allow_stale_cache": params.allow_stale_cache,
+    }
+
+
 def _invest_months_and_total(
     monthly_budget: float, price_index: pd.DatetimeIndex
 ) -> tuple[int, float]:
@@ -61,17 +122,27 @@ def portfolio_from_orders(
     *,
     fee_rate: float = 0.0,
     slippage_rate: float = 0.0,
-) -> vbt.Portfolio:
-    return vbt.Portfolio.from_orders(
-        close=close,
-        size=order_sizes,
-        init_cash=total_invested,
-        fees=fee_rate,
-        slippage=slippage_rate,
-        cash_sharing=True,
-        group_by=True,
-        freq="1D",
-    )
+) -> Any:
+    try:
+        return vbt.Portfolio.from_orders(
+            close=close,
+            size=order_sizes,
+            init_cash=total_invested,
+            fees=fee_rate,
+            slippage=slippage_rate,
+            cash_sharing=True,
+            group_by=True,
+            freq="1D",
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _FallbackPortfolio(
+            close=close,
+            size=order_sizes,
+            init_cash=total_invested,
+            fees=fee_rate,
+            slippage=slippage_rate,
+            reason=exc,
+        )
 
 
 def _dca_backtest(
@@ -107,17 +178,21 @@ def _dca_backtest(
     # 组合再平衡：叠加卖出订单
     if rebalance_max_weight is not None and rebalance_max_weight > 0:
         invest_dates = get_monthly_invest_dates(strategy_close.index)
+        original_order_sizes = order_sizes.copy()
         order_sizes = apply_rebalance_to_plan(
             order_sizes, strategy_close, invest_dates, rebalance_max_weight,
             mode=rebalance_mode,
         )
         # 更新决策快照
-        net_negatives = (order_sizes < 0).any(axis=1)
-        rebalance_triggered = net_negatives.sum()
+        if rebalance_mode == "tilt":
+            triggered = (order_sizes.round(12) != original_order_sizes.round(12)).any(axis=1)
+        else:
+            triggered = (order_sizes < 0).any(axis=1)
+        rebalance_triggered = triggered.sum()
         if decision_snapshot is not None and rebalance_triggered > 0:
             decision_snapshot["rebalance_triggered"] = False
             for dt in invest_dates:
-                if dt in decision_snapshot.index and net_negatives.get(dt, False):
+                if dt in decision_snapshot.index and triggered.get(dt, False):
                     decision_snapshot.loc[dt, "rebalance_triggered"] = True
         elif decision_snapshot is not None:
             decision_snapshot["rebalance_triggered"] = False
@@ -153,8 +228,10 @@ def run_dca_portfolio(
     """按 DCA 参数与权重分配器运行主策略。"""
     symbols = list(params.symbols)
     all_syms = _symbols_to_fetch(params)
-    full_close = fetch_close_prices(all_syms, params.start, params.end, use_cache=params.use_cache)
-    strategy_close = full_close[symbols].dropna(how="any")
+    full_close = fetch_close_prices(
+        all_syms, params.start, params.end, use_cache=params.use_cache, **_data_kwargs(params)
+    )
+    strategy_close = full_close[symbols].dropna(how="any").copy()
 
     # 注入虚拟现金标的
     if params.cash_symbol:
@@ -176,12 +253,14 @@ def run_dca_portfolio(
     default_w = normalize_weights(default_w)
 
     annual_returns = fetch_annual_returns(
-        list(params.signal_symbols), params.start, params.end, use_cache=params.use_cache
+        list(params.signal_symbols), params.start, params.end, use_cache=params.use_cache, **_data_kwargs(params)
     )
 
     vix_series = None
     if params.vix_symbol:
-        vix_series = fetch_vix_data(params.vix_symbol, params.start, params.end, use_cache=params.use_cache)
+        vix_series = fetch_vix_data(
+            params.vix_symbol, params.start, params.end, use_cache=params.use_cache, **_data_kwargs(params)
+        )
 
     return _dca_backtest(
         name,
@@ -248,29 +327,34 @@ def run_scenarios(
 ) -> dict[str, BacktestResult]:
     """主策略 + 若干 baseline。"""
     symbols = list(params.symbols)
-    needed_cols = list(dict.fromkeys([*symbols, *params.extra_symbols]))
+    cash_col = params.cash_symbol
+    needed_cols = [s for s in dict.fromkeys([*symbols, *params.extra_symbols]) if s != cash_col]
     all_syms = _symbols_to_fetch(params)
-    full_close = fetch_close_prices(all_syms, params.start, params.end, use_cache=params.use_cache)
+    full_close = fetch_close_prices(
+        all_syms, params.start, params.end, use_cache=params.use_cache, **_data_kwargs(params)
+    )
     aligned_close = full_close[needed_cols].dropna(how="any")
-    strategy_close = aligned_close[symbols]
+    strategy_symbols = [s for s in symbols if s != cash_col]
+    strategy_close = aligned_close[strategy_symbols].copy()
 
     # 注入虚拟现金标的
-    if params.cash_symbol:
-        cash_col = params.cash_symbol
+    if cash_col:
         if cash_col not in strategy_close.columns:
             strategy_close[cash_col] = 1.0
 
     annual_returns = fetch_annual_returns(
-        list(params.signal_symbols), params.start, params.end, use_cache=params.use_cache
+        list(params.signal_symbols), params.start, params.end, use_cache=params.use_cache, **_data_kwargs(params)
     )
 
     vix_series = None
     if params.vix_symbol:
-        vix_series = fetch_vix_data(params.vix_symbol, params.start, params.end, use_cache=params.use_cache)
+        vix_series = fetch_vix_data(
+            params.vix_symbol, params.start, params.end, use_cache=params.use_cache, **_data_kwargs(params)
+        )
 
-    default_w = {s: params.default_weights[s] for s in symbols if s in params.default_weights}
+    default_w = {s: params.default_weights[s] for s in strategy_close.columns if s in params.default_weights}
     if not default_w:
-        default_w = {s: 1.0 / len(symbols) for s in symbols}
+        default_w = {s: 1.0 / len(strategy_close.columns) for s in strategy_close.columns}
     default_w = normalize_weights(default_w)
 
     strategy = _dca_backtest(

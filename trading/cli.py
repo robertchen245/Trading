@@ -53,8 +53,12 @@ def _add_common_dca_args(parser: argparse.ArgumentParser, require_symbols: bool 
     parser.add_argument("--end", default="2026-01-01", help="结束日期 (默认 2026-01-01)")
     parser.add_argument("--budget", type=float, default=5000.0, help="月度定投金额 (默认 5000)")
     parser.add_argument("--weights", default="QQQ=0.7,TQQQ=0.3", help="权重 (如 QQQ=0.7,TQQQ=0.3)")
-    parser.add_argument("--allocator", default="fixed", choices=["fixed", "nasdaq_rule", "equal_weight", "smart"],
-                        help="分配器 (默认 fixed)")
+    parser.add_argument(
+        "--allocator",
+        default="fixed",
+        choices=["fixed", "nasdaq_rule", "equal_weight", "smart", "trend_follow", "momentum_rotation"],
+        help="分配器 (默认 fixed)",
+    )
     parser.add_argument("--benchmark", default="QQQ", help="基准标的 (默认 QQQ)")
     parser.add_argument("--signals", default="^IXIC", help="信号标的，逗号分隔 (默认 ^IXIC)")
     parser.add_argument("--vix", default=None, help="VIX 标的 (如 ^VIX)")
@@ -67,6 +71,12 @@ def _add_common_dca_args(parser: argparse.ArgumentParser, require_symbols: bool 
                         help="再平衡模式: sell(卖出超阈值) 或 tilt(倾斜新资金)")
     parser.add_argument("--cash", default=None, help="虚拟现金标的名称 (如 CASH)")
     parser.add_argument("--no-cache", action="store_true", help="禁用行情缓存")
+    parser.add_argument("--data-source", default="auto", choices=["auto", "auto_ibkr", "local", "ibkr", "yfinance", "stooq"],
+                        help="行情数据源: auto/auto_ibkr/local/ibkr/yfinance/stooq")
+    parser.add_argument("--local-data-dir", default=None, help="本地行情 CSV/parquet 目录")
+    parser.add_argument("--yf-retries", type=int, default=3, help="yfinance 单标的最大重试次数")
+    parser.add_argument("--yf-retry-sleep", type=float, default=1.0, help="yfinance 重试等待秒数")
+    parser.add_argument("--no-stale-cache", action="store_true", help="所有在线源失败时不使用旧缓存兜底")
 
 
 def cmd_run(args: argparse.Namespace) -> None:
@@ -103,6 +113,11 @@ def cmd_run(args: argparse.Namespace) -> None:
         rebalance_max_weight=args.rebalance_max,
         rebalance_mode=args.rebalance_mode,
         cash_symbol=args.cash,
+        data_source=args.data_source,
+        local_data_dir=args.local_data_dir,
+        yf_max_retries=args.yf_retries,
+        yf_retry_sleep=args.yf_retry_sleep,
+        allow_stale_cache=not args.no_stale_cache,
     )
 
     results = run_scenarios(
@@ -155,6 +170,11 @@ def cmd_experiment(args: argparse.Namespace) -> None:
                 allocator=args.allocator,
                 signal_symbols=_parse_symbols(args.signals),
                 vix_symbol=args.vix,
+                data_source=args.data_source,
+                local_data_dir=args.local_data_dir,
+                yf_max_retries=args.yf_retries,
+                yf_retry_sleep=args.yf_retry_sleep,
+                allow_stale_cache=not args.no_stale_cache,
             )
         ]
     else:
@@ -180,13 +200,14 @@ def cmd_experiment(args: argparse.Namespace) -> None:
 
 
 def cmd_report(args: argparse.Namespace) -> None:
-    """生成 HTML 可视化报告。"""
+    """生成可视化报告与 agent 可读报告包。"""
     from trading import (
         DCAParams,
         default_baseline_builders_v1,
         run_scenarios,
     )
     from trading.experiment import resolve_allocator
+    from trading.reporting import build_report_package, write_codex_artifact, write_report_package
     from trading.viz import fig_equity_comparison, fig_summary_dashboard, write_report_html
 
     symbols = _parse_symbols(args.symbols)
@@ -209,6 +230,11 @@ def cmd_report(args: argparse.Namespace) -> None:
         rebalance_max_weight=args.rebalance_max,
         rebalance_mode=args.rebalance_mode,
         cash_symbol=args.cash,
+        data_source=args.data_source,
+        local_data_dir=args.local_data_dir,
+        yf_max_retries=args.yf_retries,
+        yf_retry_sleep=args.yf_retry_sleep,
+        allow_stale_cache=not args.no_stale_cache,
     )
 
     results = run_scenarios(
@@ -217,17 +243,35 @@ def cmd_report(args: argparse.Namespace) -> None:
         baseline_builders=default_baseline_builders_v1(args.benchmark),
     )
 
-    out = Path(args.output)
-    out.parent.mkdir(parents=True, exist_ok=True)
-
-    write_report_html(
-        [
-            ("总览", fig_summary_dashboard(results)),
-            ("净值对比", fig_equity_comparison(results)),
-        ],
-        out,
+    package = build_report_package(
+        results,
+        title=f"{','.join(symbols)} 回测报告",
+        params=params,
+        allocator_name=args.allocator,
     )
-    print(f"报告已生成: {out}")
+    output_format = args.format
+
+    if output_format in {"html", "all"}:
+        out = Path(args.output)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        write_report_html(
+            [
+                ("总览", fig_summary_dashboard(results)),
+                ("净值对比", fig_equity_comparison(results)),
+            ],
+            out,
+        )
+        print(f"HTML 报告已生成: {out}")
+
+    if output_format in {"package", "codex", "all"}:
+        package_dir = Path(args.package_dir)
+        write_report_package(package, package_dir)
+        print(f"通用报告包已生成: {package_dir}")
+
+    if output_format in {"codex", "all"}:
+        manifest_path, snapshot_path = write_codex_artifact(package, args.package_dir)
+        print(f"Codex artifact manifest: {manifest_path}")
+        print(f"Codex artifact snapshot: {snapshot_path}")
 
 
 def cmd_list(args: argparse.Namespace) -> None:
@@ -313,6 +357,17 @@ def main() -> None:
     p_rep = sub.add_parser("report", help="生成 HTML 报告")
     _add_common_dca_args(p_rep)
     p_rep.add_argument("--output", default="reports/report.html", help="输出路径 (默认 reports/report.html)")
+    p_rep.add_argument(
+        "--format",
+        default="html",
+        choices=["html", "package", "codex", "all"],
+        help="输出格式: html/package/codex/all",
+    )
+    p_rep.add_argument(
+        "--package-dir",
+        default="reports/latest_package",
+        help="通用报告包与 Codex artifact JSON 输出目录",
+    )
     p_rep.set_defaults(func=cmd_report)
 
     # list

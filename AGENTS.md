@@ -60,6 +60,38 @@ Trading/
 └── reports/                 # 输出目录（gitignore）
 ```
 
+## Agent 报告生成指南
+
+当需要基于回测结果写报告、生成交互式 artifact，或接入 Hermes/Codex 等 agent 输出时，优先使用 agent 中立报告包，不要直接从零猜测应该读取哪些 CSV。
+
+### 报告包入口
+
+使用 `--format package|codex|all` 会在 `--package-dir` 下生成报告包：
+
+```bash
+trading report QQQ,SMH --format all --package-dir reports/latest_package
+python scripts/generate_report.py --format all
+```
+
+每个报告包中，agent 应先读取：
+
+1. `agent_report_index.json` — agent 入口索引，声明推荐读取顺序、文件角色、是否必需、报告用途。
+2. `manifest.json` — 回测标题、生成时间、参数、场景列表、数据集注册表。
+3. `metrics.csv` — 首要指标表，用来形成摘要、场景排序和收益/风险结论。
+
+### 数据职责
+
+| 文件 | 是否必需 | 报告用途 |
+|------|----------|----------|
+| `metrics.csv` | 必需 | 摘要、收益/风险排名、指标表 |
+| `equity_curve.csv` | 必需 | 组合净值走势、终值路径对比 |
+| `drawdown.csv` | 必需 | 回撤风险、压力阶段解释 |
+| `monthly_returns.csv` | 必需 | 月度波动、短周期收益分布 |
+| `decision_snapshot.csv` | 可选 | 动态策略的信号、权重、预算执行解释 |
+| `yearly_weights.csv` | 可选 | 分配器年度目标权重解释 |
+
+CSV 是事实来源；`codex_manifest.json`、`codex_snapshot.json`、Hermes 输出或其他 artifact 文件都应视为面向具体界面的派生结果。若报告包里存在 `agent_report_index.json`，自动 agent 必须优先遵循其中的 `recommended_read_order` 和 `files[].report_use`。
+
 ## 核心概念
 
 ### DCAParams
