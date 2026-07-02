@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from trading.specs import StrategySpec, nl_to_strategy_spec
+from trading.specs import StrategySpec
 
 
 class StrategySpecTests(unittest.TestCase):
@@ -28,18 +28,6 @@ class StrategySpecTests(unittest.TestCase):
         self.assertEqual(params.yf_max_retries, 5)
         self.assertAlmostEqual(params.fee_rate, 0.001, places=8)
         self.assertAlmostEqual(params.slippage_rate, 0.0005, places=8)
-
-    def test_nl_to_strategy_spec_detects_aggressive_and_allocator(self) -> None:
-        spec = nl_to_strategy_spec("做一个激进的纳指规则策略，主要QQQ和TQQQ", name="nl_test")
-        self.assertEqual(spec.name, "nl_test")
-        self.assertEqual(spec.allocator, "nasdaq_rule")
-        self.assertEqual(spec.symbols[:2], ("QQQ", "TQQQ"))
-        self.assertGreater(spec.default_weights["TQQQ"], 0.3)
-
-    def test_nl_to_strategy_spec_detects_rotation(self) -> None:
-        spec = nl_to_strategy_spec("做一个 SPY TLT GLD 的动量轮动策略", name="rotation")
-        self.assertEqual(spec.allocator, "momentum_rotation")
-        self.assertIn("SPY", spec.symbols)
 
 
 if __name__ == "__main__":

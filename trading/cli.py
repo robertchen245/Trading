@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pandas as pd
@@ -62,10 +63,11 @@ def _add_common_dca_args(parser: argparse.ArgumentParser, require_symbols: bool 
     parser.add_argument("--benchmark", default="QQQ", help="基准标的 (默认 QQQ)")
     parser.add_argument("--signals", default="^IXIC", help="信号标的，逗号分隔 (默认 ^IXIC)")
     parser.add_argument("--vix", default=None, help="VIX 标的 (如 ^VIX)")
-    parser.add_argument("--fee", type=float, default=0.0, help="手续费率")
-    parser.add_argument("--slippage", type=float, default=0.0, help="滑点率")
-    parser.add_argument("--max-weight", type=float, default=None, help="单资产权重上限")
-    parser.add_argument("--max-exposure", type=float, default=None, help="预算使用上限")
+    parser.add_argument("--fee", "--fee-rate", dest="fee", type=float, default=0.0, help="手续费率")
+    parser.add_argument("--slippage", "--slippage-rate", dest="slippage", type=float, default=0.0, help="滑点率")
+    parser.add_argument("--max-weight", "--max-weight-per-asset", dest="max_weight", type=float, default=None, help="单资产权重上限")
+    parser.add_argument("--max-exposure", "--max-gross-exposure", dest="max_exposure", type=float, default=None, help="预算使用上限")
+    parser.add_argument("--risk-observe-only", action="store_true", help="仅统计风控触发，不实际截断下单")
     parser.add_argument("--rebalance-max", type=float, default=None, help="再平衡阈值 (如 0.75)")
     parser.add_argument("--rebalance-mode", default="sell", choices=["sell", "tilt"],
                         help="再平衡模式: sell(卖出超阈值) 或 tilt(倾斜新资金)")
@@ -110,6 +112,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         slippage_rate=args.slippage,
         max_weight_per_asset=args.max_weight,
         max_gross_exposure=args.max_exposure,
+        risk_observe_only=args.risk_observe_only,
         rebalance_max_weight=args.rebalance_max,
         rebalance_mode=args.rebalance_mode,
         cash_symbol=args.cash,
@@ -170,11 +173,21 @@ def cmd_experiment(args: argparse.Namespace) -> None:
                 allocator=args.allocator,
                 signal_symbols=_parse_symbols(args.signals),
                 vix_symbol=args.vix,
+                benchmark_symbol=args.benchmark,
+                use_cache=not args.no_cache,
                 data_source=args.data_source,
                 local_data_dir=args.local_data_dir,
                 yf_max_retries=args.yf_retries,
                 yf_retry_sleep=args.yf_retry_sleep,
                 allow_stale_cache=not args.no_stale_cache,
+                fee_rate=args.fee,
+                slippage_rate=args.slippage,
+                max_weight_per_asset=args.max_weight,
+                max_gross_exposure=args.max_exposure,
+                risk_observe_only=args.risk_observe_only,
+                rebalance_max_weight=args.rebalance_max,
+                rebalance_mode=args.rebalance_mode,
+                cash_symbol=args.cash,
             )
         ]
     else:
@@ -203,12 +216,22 @@ def cmd_report(args: argparse.Namespace) -> None:
     """生成可视化报告与 agent 可读报告包。"""
     from trading import (
         DCAParams,
+        compare_portfolios,
         default_baseline_builders_v1,
         run_scenarios,
     )
     from trading.experiment import resolve_allocator
     from trading.reporting import build_report_package, write_codex_artifact, write_report_package
-    from trading.viz import fig_equity_comparison, fig_summary_dashboard, write_report_html
+    from trading.viz import (
+        fig_drawdown,
+        fig_equity_comparison,
+        fig_monthly_returns_heatmap,
+        fig_rolling_sharpe,
+        fig_summary_dashboard,
+        fig_yearly_weights_stacked,
+        write_figure_image,
+        write_report_html,
+    )
 
     symbols = _parse_symbols(args.symbols)
     weights = _parse_weights(args.weights)
@@ -227,6 +250,11 @@ def cmd_report(args: argparse.Namespace) -> None:
         vix_symbol=args.vix,
         benchmark_symbol=args.benchmark,
         use_cache=not args.no_cache,
+        fee_rate=args.fee,
+        slippage_rate=args.slippage,
+        max_weight_per_asset=args.max_weight,
+        max_gross_exposure=args.max_exposure,
+        risk_observe_only=args.risk_observe_only,
         rebalance_max_weight=args.rebalance_max,
         rebalance_mode=args.rebalance_mode,
         cash_symbol=args.cash,
@@ -250,18 +278,37 @@ def cmd_report(args: argparse.Namespace) -> None:
         allocator_name=args.allocator,
     )
     output_format = args.format
+    table = compare_portfolios(results)
+    cost_impact = _cost_impact_table(params, allocator, results)
+    risk_diag = _risk_diagnostics_table(results["strategy"])
+    strategy = results["strategy"]
+    figures: list[tuple[str, object]] = [
+        ("场景指标", _table_figure(table, title="场景指标对比")),
+        ("成本前后对比", _table_figure(cost_impact, title="成本前后指标变化")),
+        ("风控诊断", _table_figure(risk_diag, title="风控触发与预算执行")),
+        ("总览（净值/回撤/超额）", fig_summary_dashboard(results)),
+        ("净值对比", fig_equity_comparison(results)),
+        ("回撤", fig_drawdown(results)),
+        ("策略月度收益热力图", fig_monthly_returns_heatmap(strategy.portfolio.value())),
+        ("策略滚动夏普", fig_rolling_sharpe(strategy)),
+    ]
+    if strategy.yearly_weights is not None and not strategy.yearly_weights.empty:
+        figures.append(("年度目标权重", fig_yearly_weights_stacked(strategy.yearly_weights)))
 
     if output_format in {"html", "all"}:
         out = Path(args.output)
         out.parent.mkdir(parents=True, exist_ok=True)
-        write_report_html(
-            [
-                ("总览", fig_summary_dashboard(results)),
-                ("净值对比", fig_equity_comparison(results)),
-            ],
-            out,
-        )
+        prefix = out.with_suffix("")
+        table.to_csv(prefix.with_suffix(".metrics.csv"))
+        cost_impact.to_csv(prefix.with_name(f"{prefix.name}.cost_impact.csv"))
+        if strategy.decision_snapshot is not None and not strategy.decision_snapshot.empty:
+            strategy.decision_snapshot.to_csv(prefix.with_name(f"{prefix.name}.decision_snapshot.csv"))
+        write_report_html(figures, out)
         print(f"HTML 报告已生成: {out}")
+        print(f"指标 CSV: {prefix.with_suffix('.metrics.csv')}")
+        print(f"成本对比 CSV: {prefix.with_name(f'{prefix.name}.cost_impact.csv')}")
+        if strategy.decision_snapshot is not None and not strategy.decision_snapshot.empty:
+            print(f"决策快照 CSV: {prefix.with_name(f'{prefix.name}.decision_snapshot.csv')}")
 
     if output_format in {"package", "codex", "all"}:
         package_dir = Path(args.package_dir)
@@ -272,6 +319,107 @@ def cmd_report(args: argparse.Namespace) -> None:
         manifest_path, snapshot_path = write_codex_artifact(package, args.package_dir)
         print(f"Codex artifact manifest: {manifest_path}")
         print(f"Codex artifact snapshot: {snapshot_path}")
+
+    if args.png and output_format in {"html", "all"}:
+        out = Path(args.output)
+        prefix = out.with_suffix("")
+        for title, fig in figures:
+            safe = "".join(c if c.isalnum() else "_" for c in title)[:40]
+            try:
+                image_path = prefix.parent / f"{prefix.name}_{safe}.png"
+                write_figure_image(fig, image_path)
+            except Exception as exc:  # noqa: BLE001
+                print(f"跳过 PNG「{title}」: {exc}")
+
+
+def _cost_impact_table(params, allocator, results_with_cost) -> pd.DataFrame:
+    from trading import compare_portfolios, default_baseline_builders_v1, run_scenarios
+
+    with_cost_table = compare_portfolios(results_with_cost)
+    if params.fee_rate == 0.0 and params.slippage_rate == 0.0:
+        no_cost_table = with_cost_table.copy()
+    else:
+        no_cost_params = replace(params, fee_rate=0.0, slippage_rate=0.0)
+        no_cost_results = run_scenarios(
+            no_cost_params,
+            allocator=allocator,
+            baseline_builders=default_baseline_builders_v1(params.benchmark_symbol),
+        )
+        no_cost_table = compare_portfolios(no_cost_results)
+
+    rows: list[dict[str, float | str]] = []
+    for scenario in with_cost_table.index:
+        if scenario not in no_cost_table.index:
+            continue
+        rows.append(
+            {
+                "scenario": scenario,
+                "final_value_no_cost": float(no_cost_table.loc[scenario, "final_value"]),
+                "final_value_with_cost": float(with_cost_table.loc[scenario, "final_value"]),
+                "final_value_delta": float(with_cost_table.loc[scenario, "final_value"])
+                - float(no_cost_table.loc[scenario, "final_value"]),
+                "CAGR_no_cost": float(no_cost_table.loc[scenario, "CAGR"]),
+                "CAGR_with_cost": float(with_cost_table.loc[scenario, "CAGR"]),
+                "CAGR_delta": float(with_cost_table.loc[scenario, "CAGR"])
+                - float(no_cost_table.loc[scenario, "CAGR"]),
+                "max_drawdown_no_cost": float(no_cost_table.loc[scenario, "max_drawdown"]),
+                "max_drawdown_with_cost": float(with_cost_table.loc[scenario, "max_drawdown"]),
+                "max_drawdown_delta": float(with_cost_table.loc[scenario, "max_drawdown"])
+                - float(no_cost_table.loc[scenario, "max_drawdown"]),
+            }
+        )
+    return pd.DataFrame(rows).set_index("scenario")
+
+
+def _risk_diagnostics_table(strategy_result) -> pd.DataFrame:
+    if strategy_result.decision_snapshot is None or strategy_result.decision_snapshot.empty:
+        return pd.DataFrame(
+            [
+                {
+                    "metric": "risk_trigger_count",
+                    "value": strategy_result.risk_trigger_count,
+                }
+            ]
+        ).set_index("metric")
+    snap = strategy_result.decision_snapshot
+    weight_cap_triggered = (
+        pd.to_numeric(snap["weight_cap_triggered"]).sum()
+        if "weight_cap_triggered" in snap
+        else 0
+    )
+    gross_exposure_triggered = (
+        pd.to_numeric(snap["gross_exposure_triggered"]).sum()
+        if "gross_exposure_triggered" in snap
+        else 0
+    )
+    metrics = {
+        "risk_trigger_count": int(strategy_result.risk_trigger_count),
+        "weight_cap_trigger_count": int(weight_cap_triggered),
+        "gross_exposure_trigger_count": int(gross_exposure_triggered),
+        "avg_budget_utilization": float(pd.to_numeric(snap["budget_utilization"]).mean()),
+        "min_budget_utilization": float(pd.to_numeric(snap["budget_utilization"]).min()),
+        "max_budget_utilization": float(pd.to_numeric(snap["budget_utilization"]).max()),
+    }
+    return pd.DataFrame(
+        [{"metric": key, "value": value} for key, value in metrics.items()]
+    ).set_index("metric")
+
+
+def _table_figure(table: pd.DataFrame, *, title: str):
+    import plotly.graph_objects as go
+
+    display = table.reset_index()
+    return go.Figure(
+        data=[
+            go.Table(
+                header=dict(values=list(display.columns), fill_color="paleturquoise", align="left"),
+                cells=dict(
+                    values=[display[c].astype(str) for c in display.columns],
+                    align="left",
+                ),
+            ),
+        ],
+    ).update_layout(title=title)
 
 
 def cmd_list(args: argparse.Namespace) -> None:
@@ -357,6 +505,7 @@ def main() -> None:
     p_rep = sub.add_parser("report", help="生成 HTML 报告")
     _add_common_dca_args(p_rep)
     p_rep.add_argument("--output", default="reports/report.html", help="输出路径 (默认 reports/report.html)")
+    p_rep.add_argument("--png", action="store_true", help="导出 PNG（需安装 kaleido）")
     p_rep.add_argument(
         "--format",
         default="html",

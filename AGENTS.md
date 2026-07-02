@@ -54,7 +54,6 @@ Trading/
 │   ├── metrics.py           # CAGR、夏普、回撤、超额序列
 │   └── viz.py               # Plotly 图 + HTML/PNG 报告
 ├── examples/                # 独立运行脚本
-├── scripts/                 # run_experiments、generate_report
 ├── tests/                   # pytest (10 tests)
 ├── data/cache/              # Parquet 缓存（gitignore）
 └── reports/                 # 输出目录（gitignore）
@@ -70,7 +69,6 @@ Trading/
 
 ```bash
 trading report QQQ,SMH --format all --package-dir reports/latest_package
-python scripts/generate_report.py --format all
 ```
 
 每个报告包中，agent 应先读取：
@@ -192,7 +190,7 @@ def my_alloc(signal: SignalSnapshot, dw: dict) -> dict:
 ```
 
 2. 在 `experiment.py` 的 `ALLOCATOR_REGISTRY` 注册
-3. 在 `specs.py` 的 `SUPPORTED_ALLOCATORS` 和 `nl_to_strategy_spec` 中添加
+3. 在 `specs.py` 的 `SUPPORTED_ALLOCATORS` 中添加；如需 preset，也同步添加到 `preset_strategy_specs`
 
 ## 环境
 

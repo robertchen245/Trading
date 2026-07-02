@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -240,75 +239,3 @@ def preset_strategy_specs() -> list[StrategySpec]:
             benchmark_symbol="SPY",
         ),
     ]
-
-
-def nl_to_strategy_spec(prompt: str, *, name: str = "nl_generated_strategy") -> StrategySpec:
-    """MVP: 将自然语言转为策略草案。"""
-    text = prompt.lower()
-    symbols = _extract_symbols(prompt) or ("QQQ", "TQQQ")
-
-    # 分配器检测
-    allocator = "fixed"
-    if "轮动" in text or "rotation" in text or "momentum rotation" in text:
-        allocator = "momentum_rotation"
-    elif "趋势" in text or "trend" in text or "均线" in text or "200dma" in text:
-        allocator = "trend_follow"
-    elif "smart" in text or "多信号" in text or "vix" in text:
-        allocator = "smart"
-    elif "nasdaq_rule" in text or "纳指规则" in text or "动量" in text:
-        allocator = "nasdaq_rule"
-    elif "等权" in text or "equal weight" in text:
-        allocator = "equal_weight"
-
-    # 激进/保守
-    if "激进" in text or "aggressive" in text:
-        qqq_weight, tqqq_weight = 0.6, 0.4
-    elif "保守" in text or "defensive" in text:
-        qqq_weight, tqqq_weight = 0.85, 0.15
-    else:
-        qqq_weight, tqqq_weight = 0.75, 0.25
-
-    # VIX 检测
-    vix_sym = "^VIX" if ("vix" in text or "恐惧" in text) else None
-
-    default_weights = _guess_weights(symbols, qqq_weight, tqqq_weight)
-    return StrategySpec(
-        name=name,
-        symbols=symbols,
-        start="2016-01-01",
-        end="2026-01-01",
-        monthly_budget=5000.0,
-        default_weights=default_weights,
-        allocator=allocator,
-        vix_symbol=vix_sym,
-    )
-
-
-def _extract_symbols(prompt: str) -> tuple[str, ...]:
-    candidates = re.findall(r"\b[A-Z^][A-Z0-9^]{1,7}\b", prompt)
-    unique = []
-    seen: set[str] = set()
-    for symbol in candidates:
-        if symbol in seen:
-            continue
-        seen.add(symbol)
-        unique.append(symbol)
-    return tuple(unique[:8])
-
-
-def _guess_weights(
-    symbols: tuple[str, ...], qqq_weight: float, tqqq_weight: float
-) -> dict[str, float]:
-    if len(symbols) == 1:
-        return {symbols[0]: 1.0}
-    if "QQQ" in symbols and "TQQQ" in symbols:
-        rest = [s for s in symbols if s not in {"QQQ", "TQQQ"}]
-        leftover = max(0.0, 1.0 - qqq_weight - tqqq_weight)
-        out = {"QQQ": qqq_weight, "TQQQ": tqqq_weight}
-        if rest:
-            each = leftover / len(rest) if leftover > 0 else 0.0
-            for symbol in rest:
-                out[symbol] = each
-        return out
-    equal = 1.0 / len(symbols)
-    return {symbol: equal for symbol in symbols}

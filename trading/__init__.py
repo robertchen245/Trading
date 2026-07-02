@@ -10,7 +10,7 @@ from trading.engine import BacktestResult, portfolio_from_orders, run_dca_portfo
 from trading.experiment import ExperimentResult, rank_experiments, run_experiment, run_experiments
 from trading.metrics import compare_portfolios, infer_monthly_full_baseline_key, portfolio_metrics_table
 from trading.scenario_context import BaselineBuilder, ScenarioContext
-from trading.specs import StrategySpec, nl_to_strategy_spec, preset_strategy_specs
+from trading.specs import StrategySpec, preset_strategy_specs
 from trading.strategies.dca import (
     DCAParams,
     SignalSnapshot,
@@ -45,7 +45,6 @@ __all__ = [
     "nasdaq_rule_allocator",
     "smart_allocator",
     "trend_follow_allocator",
-    "nl_to_strategy_spec",
     "normalize_weights",
     "portfolio_from_orders",
     "portfolio_metrics_table",
